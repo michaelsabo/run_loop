@@ -276,6 +276,15 @@ Please update your sources.))
     end
 
     # @!visibility private
+    def simulator_tcc_db
+      @simulator_tcc_db ||= lambda do
+        return nil if physical_device?
+        path = File.join(simulator_root_dir, "data/Library/TCC/TCC.db")
+        simulator_ensure_tcc_db(path)
+      end.call
+    end
+
+    # @!visibility private
     # Is this the first launch of this Simulator?
     #
     # TODO Needs unit and integration tests.
@@ -562,6 +571,25 @@ Please update your sources.))
       end
 
       detect_state_from_line(matched_line)
+    end
+
+    # @!visibility private
+    def simulator_install_tcc_db(path)
+      dir = File.expand_path(File.dirname(__FILE__))
+      source = File.join(dir, "tcc", "TCC.db")
+
+      FileUtils.mkdir_p(File.expand_path(File.dirname(path)))
+      FileUtils.cp(source, path)
+      path
+    end
+
+    # @!visibility private
+    def simulator_ensure_tcc_db(path)
+      if File.exist?(path)
+        path
+      else
+        simulator_install_tcc_db(path)
+      end
     end
 
     # @!visibility private

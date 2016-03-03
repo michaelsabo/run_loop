@@ -4,6 +4,7 @@ ruby_files = Dir.glob('{lib}/**/*.rb')
 java_scripts = Dir.glob('scripts/**/*.js')
 bash_scripts = ['scripts/udidetect', 'scripts/read-cmd.sh', 'scripts/timeout3']
 plists = Dir.glob('plists/**/*.plist')
+tcc_files = Dir.glob("{lib}/**/TCC.db")
 
 Gem::Specification.new do |s|
   s.name        = 'run_loop'
@@ -28,7 +29,7 @@ into a valid version, e.g. 1.2.3 or 1.2.3.pre10
   s.homepage    = 'http://calaba.sh'
   s.summary     = %q{The bridge between Calabash iOS and Xcode command-line
 tools like instruments and simctl.}
-  s.files         = ruby_files + java_scripts + bash_scripts + plists + ['LICENSE']
+  s.files         = ruby_files + java_scripts + bash_scripts + plists + ['LICENSE'] + tcc_files
   s.require_paths = ['lib']
   s.licenses    = ['MIT']
   s.executables = 'run-loop'
