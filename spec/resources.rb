@@ -122,7 +122,14 @@ class Resources
     target = File.join(local_tmp_dir, "GlobalPreferences.plist")
     FileUtils.rm_rf(target)
     FileUtils.cp(source, target)
+    target
+  end
 
+  def example_db
+    source = File.join(resources_dir, "example.db")
+    target = File.join(local_tmp_dir, "example.db")
+    FileUtils.rm_rf(target)
+    FileUtils.cp(source, target)
     target
   end
 
