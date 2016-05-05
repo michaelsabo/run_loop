@@ -20,6 +20,7 @@ class RunLoop::CoreSimulator
     :uninstall_app_timeout => RunLoop::Environment.ci? ? 120 : 30,
     :launch_app_timeout => RunLoop::Environment.ci? ? 120 : 30,
     :wait_for_state_timeout => RunLoop::Environment.ci? ? 120 : 30
+    :leave_simulator_running => true
   }
 
   # @!visibility private
@@ -87,12 +88,12 @@ class RunLoop::CoreSimulator
               ['iOS Simulator.app', true],
 
               # Xcode >= 7.0
-              ['Simulator.app', true],
+             # ['Simulator.app', true],
 
               # Multiple launchd_sim processes have been causing problems.  This
               # is a first pass at investigating what it would mean to kill the
               # launchd_sim process.
-              ['launchd_sim', false],
+              #['launchd_sim', false],
 
               # Required for XCUITest termination; the simulator hangs otherwise.
               ["xpcproxy", false],
@@ -118,7 +119,7 @@ class RunLoop::CoreSimulator
   # Terminate CoreSimulator related processes.  This processes can accumulate
   # as testing proceeds and can cause instability.
   def self.terminate_core_simulator_processes
-
+    return if DEFAULT_OPTIONS[:leave_simulator_running]
     self.quit_simulator
 
     MANAGED_PROCESSES.each do |process_name|
@@ -130,6 +131,7 @@ class RunLoop::CoreSimulator
   # @!visibility private
   # Quit any Simulator.app or iOS Simulator.app
   def self.quit_simulator
+    return if DEFAULT_OPTIONS[:leave_simulator_running]
     SIMULATOR_QUIT_PROCESSES.each do |process_details|
       process_name = process_details[0]
       send_term_first = process_details[1]

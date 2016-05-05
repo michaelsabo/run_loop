@@ -73,7 +73,7 @@ module RunLoop
       uia_strategy = self.detect_uia_strategy(options, device, xcode)
       reset_options = self.detect_reset_options(options)
 
-      instruments.kill_instruments(xcode)
+      #instruments.kill_instruments(xcode)
 
       timeout = options[:timeout] || 30
 
@@ -716,33 +716,34 @@ Logfile: #{log_file}
 
       # Validate the architecture.
       self.expect_simulator_compatible_arch(device, app)
-
+      @core_sim ||= nil
       # Quits the simulator.
-      core_sim = RunLoop::CoreSimulator.new(device, app, :xcode => xcode)
-
+      if @core_sim.ni?
+        @core_sim = RunLoop::CoreSimulator.new(device, app, :xcode => xcode)
+      end
       # Calabash 0.x can only reset the app sandbox (true/false).
       # Calabash 2.x has advanced reset options.
       if reset_options
-        core_sim.reset_app_sandbox
+        @core_sim.reset_app_sandbox
       end
 
       # Will quit the simulator if it is running.
       # @todo fix accessibility_enabled? so we don't have to quit the sim
       # SimControl#accessibility_enabled? is always false during Core#prepare_simulator
       # https://github.com/calabash/run_loop/issues/167
-      simctl.ensure_accessibility(device)
+      #simctl.ensure_accessibility(device)
 
       # Will quit the simulator if it is running.
       # @todo fix software_keyboard_enabled? so we don't have to quit the sim
       # SimControl#software_keyboard_enabled? is always false during Core#prepare_simulator
       # https://github.com/calabash/run_loop/issues/168
-      simctl.ensure_software_keyboard(device)
+      #simctl.ensure_software_keyboard(device)
 
       # Launches the simulator if the app is not installed.
-      core_sim.install
+      @core_sim.install
 
       # If CoreSimulator has already launched the simulator, it will not launch it again.
-      core_sim.launch_simulator
+      @core_sim.launch_simulator
     end
 
     # @!visibility private
