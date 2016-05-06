@@ -19,7 +19,7 @@ class RunLoop::CoreSimulator
     :install_app_timeout => RunLoop::Environment.ci? ? 120 : 30,
     :uninstall_app_timeout => RunLoop::Environment.ci? ? 120 : 30,
     :launch_app_timeout => RunLoop::Environment.ci? ? 120 : 30,
-    :wait_for_state_timeout => RunLoop::Environment.ci? ? 120 : 30
+    :wait_for_state_timeout => RunLoop::Environment.ci? ? 120 : 30,
     :leave_simulator_running => true
   }
 

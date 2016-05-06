@@ -718,7 +718,7 @@ Logfile: #{log_file}
       self.expect_simulator_compatible_arch(device, app)
       @core_sim ||= nil
       # Quits the simulator.
-      if @core_sim.ni?
+      if @core_sim.nil?
         @core_sim = RunLoop::CoreSimulator.new(device, app, :xcode => xcode)
       end
       # Calabash 0.x can only reset the app sandbox (true/false).
