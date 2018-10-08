@@ -1,5 +1,5 @@
 module RunLoop
-  VERSION = "2.1.1"
+  VERSION = "3.0.1"
 
   # A model of a software release version that can be used to compare two versions.
   #
@@ -7,12 +7,17 @@ module RunLoop
   # However, the semantic versioning spec is incompatible with RubyGem's patterns
   # for pre-release gems.
   #
-  # > "But returning to the practical: No release version of SemVer is compatible with Rubygems." - _David Kellum_
+  # > "But returning to the practical: No release version of SemVer is compatible
+  # > with Rubygems." - _David Kellum_
   #
   # Calabash and RunLoop version numbers will be in the form `<major>.<minor>.<patch>[.pre<N>]`.
   #
   # @see http://semver.org/
   # @see http://gravitext.com/2012/07/22/versioning.html
+  #
+  # TODO Expand to handle versions with more than 1 "." and no "."
+  # ^ Needs to handle arbitrary versions from Info.plists.  In particular it
+  #   needs to handle a unix timestamp - found the DeviceAgent-Runner.app.
   class Version
 
     # @!attribute [rw] major
@@ -97,7 +102,15 @@ module RunLoop
 
     # The hash method for this instance.
     def hash
-      to_s.hash
+      str = [major, minor, patch].map do |str|
+        str ? str : "0"
+      end.join(".")
+
+      if pre
+        str = "#{str}.#{pre}"
+      end
+
+      str.hash
     end
 
     # Compare this version to another for equality.
@@ -150,28 +163,44 @@ module RunLoop
     #   compare Version.new(0.9.0),  Version.new(0.9.0)  =>  0
     #
     # @return [Integer] an integer `(-1, 1)`
+    def <=> (other)
+      Version.compare(self, other)
+    end
+
+    # Compare version `a` to version `b`.
+    #
+    # @example
+    #   compare Version.new(0.10.0), Version.new(0.9.0)  =>  1
+    #   compare Version.new(0.9.0),  Version.new(0.10.0) => -1
+    #   compare Version.new(0.9.0),  Version.new(0.9.0)  =>  0
+    #
+    # @return [Integer] an integer `(-1, 1)`
     def self.compare(a, b)
 
       if a.major != b.major
-        return a.major > b.major ? 1 : -1
+        return a.major.to_i > b.major.to_i ? 1 : -1
       end
 
-      if a.minor != b.minor
-        return a.minor.to_i  > b.minor.to_i ? 1 : -1
+      a_minor = a.minor ? a.minor.to_i : 0
+      b_minor = b.minor ? b.minor.to_i : 0
+      if a_minor != b_minor
+        return a_minor > b_minor.to_i ? 1 : -1
       end
 
-      if a.patch != b.patch
-        return a.patch.to_i > b.patch.to_i ? 1 : -1
+      a_patch = a.patch ? a.patch.to_i : 0
+      b_patch = b.patch ? b.patch.to_i : 0
+      if a_patch != b_patch
+        return a_patch.to_i > b_patch.to_i ? 1 : -1
       end
 
-      return -1 if a.pre and (not a.pre_version) and b.pre_version
-      return 1 if a.pre_version and b.pre and (not b.pre_version)
+      return -1 if a.pre && (!a.pre_version) && b.pre_version
+      return 1 if a.pre_version && b.pre && (!b.pre_version)
 
-      return -1 if a.pre and (not b.pre)
-      return 1 if (not a.pre) and b.pre
+      return -1 if a.pre && (!b.pre)
+      return 1 if (!a.pre) && b.pre
 
-      return -1 if a.pre_version and (not b.pre_version)
-      return 1 if (not a.pre_version) and b.pre_version
+      return -1 if a.pre_version && (!b.pre_version)
+      return 1 if (!a.pre_version) && b.pre_version
 
       if a.pre_version != b.pre_version
         return a.pre_version.to_i > b.pre_version.to_i ? 1 : -1

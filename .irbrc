@@ -4,6 +4,16 @@ require 'benchmark'
 require 'run_loop'
 require 'command_runner'
 
+if RUBY_PLATFORM[/darwin/]
+  begin
+    require "dnssd"
+  rescue LoadError => _
+    "Skipping dnssd; it is not installed"
+  end
+else
+  puts "Skipping dnssd on #{RUBY_PLATFORM}"
+end
+
 AwesomePrint.irb!
 
 ARGV.concat [ '--readline',
@@ -48,6 +58,7 @@ puts '> simctl  => Simctl instance'
 puts '> default_sim => Default simulator'
 puts '> verbose     => turn on DEBUG logging'
 puts '> quiet       => turn off DEBUG logging'
+puts "> holmes      => Launch an app with DeviceAgent"
 puts ''
 
 def xcode
@@ -63,12 +74,12 @@ def simctl
 end
 
 def default_sim
-  @default_sim ||= lambda do
+  @default_sim ||= begin
     name = RunLoop::Core.default_simulator(xcode)
     simctl.simulators.find do |sim|
-      sim.instruments_identifier(xcode) == name
+      sim.instruments_identifier == name
     end
-  end.call
+  end
 end
 
 def verbose
@@ -93,7 +104,7 @@ def create_simulator(n, options={})
   runtime = merged_options[:runtime]
 
   n.times do
-    system('xcrun', 'simctl', 'create', name, type, runtime)
+    system('xcrun', "simctl", 'create', name, type, runtime)
   end
 end
 
@@ -101,41 +112,26 @@ def delete_simulator(name)
   simctl.simulators.each do |simulator|
     if simulator.name == name
       puts "Deleting #{simulator}"
-      system('xcrun', 'simctl', 'delete', simulator.udid)
+      system('xcrun', "simctl", 'delete', simulator.udid)
     end
   end
   true
 end
 
-if !ENV["CBXWS"]
-  moody = File.expand_path(File.join("~/", "git", "calabash", "xcuitest", "CBXDriver.xcworkspace"))
-  prometus = File.expand_path(File.join("~/", "calabash-xcuitest-server", "CBXDriver.xcworkspace"))
-
-  if File.directory?(moody)
-    ENV["CBXWS"] = moody
-  elsif File.directory?(prometus)
-    ENV["CBXWS"] = prometus
-  end
-end
-
-puts "XCUITest workspace = #{ENV["CBXWS"]}"
-
-def xcuitest(bundle_id="com.apple.Preferences")
+def holmes(options={})
   device = RunLoop::Device.detect_device({}, xcode, simctl, instruments)
-  RunLoop::XCUITest.new(bundle_id, device)
-end
 
-def holmes(bundle_id="com.apple.Preferences")
-  device = RunLoop::Device.detect_device({}, xcode, simctl, instruments)
-  options = {
+  default_options = {
+    :app => "com.apple.Preferences",
     :device => device.udid,
-    :xcuitest => true,
     :xcode => xcode,
     :simctl => simctl,
-    :instruments => instruments,
-    :app => bundle_id
+    :automator => :device_agent,
+    :cbx_launcher => :ios_device_manager
   }
-  RunLoop.run(options)
+
+  merged_options = default_options.merge(options)
+  RunLoop.run(merged_options)
 end
 
 verbose

@@ -120,6 +120,26 @@ describe RunLoop::Environment do
     end
   end
 
+  describe ".device_agent_url" do
+    it "returns DEVICE_AGENT_URL" do
+      url = "http://denis.local:27753"
+      stub_env({"DEVICE_AGENT_URL" => url})
+      expect(RunLoop::Environment.device_agent_url).to be == url
+    end
+
+    describe "returns nil" do
+      it "is undefined" do
+        stub_env({"DEVICE_AGENT_URL" => nil})
+        expect(RunLoop::Environment.device_agent_url).to be == nil
+      end
+
+      it "is the empty string" do
+        stub_env({"DEVICE_AGENT_URL" => ""})
+        expect(RunLoop::Environment.device_agent_url).to be == nil
+      end
+    end
+  end
+
   describe ".reset_between_scenarios?" do
     it "true" do
       stub_env({"RESET_BETWEEN_SCENARIOS" => "1"})
@@ -315,9 +335,140 @@ describe RunLoop::Environment do
       expect(RunLoop::Environment.developer_dir).to be == '/some/xcode/path'
     end
 
-    it 'returns nil if value is the empty string' do
-      stub_env('DEVELOPER_DIR', '')
-      expect(RunLoop::Environment.developer_dir).to be == nil
+    describe "returns nil" do
+      it "if value is the empty string" do
+        stub_env('DEVELOPER_DIR', '')
+        expect(RunLoop::Environment.developer_dir).to be == nil
+      end
+
+      it "if value is nil" do
+        stub_env({"DEVELOPER_DIR" => nil})
+        expect(RunLoop::Environment.developer_dir).to be == nil
+      end
+    end
+  end
+
+  describe ".codesign_identity" do
+    it "returns value" do
+      identity = "iPhone Developer: Max Musterman (ABCDE12345)"
+      stub_env({"CODE_SIGN_IDENTITY" => identity})
+
+      expect(RunLoop::Environment.code_sign_identity).to be == identity
+    end
+
+    describe "returns nil" do
+      it "if value is the empty string" do
+        stub_env("CODE_SIGN_IDENTITY", "")
+        expect(RunLoop::Environment.code_sign_identity).to be == nil
+      end
+
+      it "if value is nil" do
+        stub_env({"CODE_SIGN_IDENTITY" => nil})
+        expect(RunLoop::Environment.code_sign_identity).to be == nil
+      end
+    end
+  end
+
+  describe ".provisioning_profile" do
+    it "returns the value" do
+      path = "path/to/provisioning/profile"
+      stub_env({"PROVISIONING_PROFILE" => path})
+
+      expect(RunLoop::Environment.provisioning_profile).to be == path
+    end
+
+    it "returns nil if value is the empty string" do
+      stub_env("PROVISIONING_PROFILE", "")
+      expect(RunLoop::Environment.provisioning_profile).to be == nil
+    end
+
+    it "returns nil if value is nil" do
+      stub_env({"PROVISIONING_PROFILE" => nil})
+      expect(RunLoop::Environment.provisioning_profile).to be == nil
+    end
+  end
+
+  describe ".keychain" do
+    it "returns value" do
+      keychain = "/Users/maxmusterman/Library/Keychains/login.keychain"
+      stub_env({"KEYCHAIN" => keychain})
+
+      expect(RunLoop::Environment.keychain).to be == keychain
+    end
+
+    describe "returns nil" do
+      it "if value is the empty string" do
+        stub_env("KEYCHAIN", "")
+        expect(RunLoop::Environment.keychain).to be == nil
+      end
+
+      it "if value is nil" do
+        stub_env({"KEYCHAIN" => nil})
+        expect(RunLoop::Environment.keychain).to be == nil
+      end
+    end
+  end
+
+  describe ".ios_device_manager" do
+    it "returns value" do
+      manager = "/usr/local/bin/iOSDeviceManager"
+      stub_env({"IOS_DEVICE_MANAGER" => manager})
+
+      expect(RunLoop::Environment.ios_device_manager).to be == manager
+    end
+
+    describe "returns nil" do
+      it "if value is the empty string" do
+        stub_env("IOS_DEVICE_MANAGER", "")
+        expect(RunLoop::Environment.ios_device_manager).to be == nil
+      end
+
+      it "if value is nil" do
+        stub_env("IOS_DEVICE_MANAGER", "")
+        expect(RunLoop::Environment.ios_device_manager).to be == nil
+      end
+    end
+  end
+
+  describe ".cbxdevice" do
+    it "returns value" do
+      path = "/path/to/ipa/CBX-Runner.app"
+      stub_env({"CBXDEVICE" => path})
+
+      expect(RunLoop::Environment.cbxdevice).to be == path
+    end
+
+    describe "returns nil" do
+      it "if value is the empty string" do
+        stub_env("CBXDEVICE", "")
+        expect(RunLoop::Environment.cbxdevice).to be == nil
+      end
+
+      it "if value is nil" do
+        stub_env({"CBXDEVICE" => nil})
+        expect(RunLoop::Environment.cbxdevice).to be == nil
+      end
+    end
+  end
+
+  describe ".cbxsim" do
+    it "returns value" do
+      path = "/path/to/app/CBX-Runner.app"
+      stub_env({"CBXSIM" => path})
+
+      expect(RunLoop::Environment.cbxsim).to be == path
+    end
+
+    describe "returns nil" do
+      it "if value is the empty string" do
+        stub_env("CBXSIM", "")
+        expect(RunLoop::Environment.cbxsim).to be == nil
+      end
+
+      it "if value is nil" do
+        stub_env({"CBXSIM" => nil})
+        expect(RunLoop::Environment.cbxsim).to be == nil
+      end
     end
   end
 

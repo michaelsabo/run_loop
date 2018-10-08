@@ -158,10 +158,13 @@ module RunLoop
     # @todo Should this raise errors?
     # @todo Is this jruby compatible?
     def spawn(automation_template, options, log_file)
+      env = {
+        "CLOBBER" => "1"
+      }
       splat_args = spawn_arguments(automation_template, options)
       logger = options[:logger]
       RunLoop::Logging.log_debug(logger, "xcrun #{splat_args.join(' ')} >& #{log_file}")
-      pid = Process.spawn('xcrun', *splat_args, {:out => log_file, :err => log_file})
+      pid = Process.spawn(env, 'xcrun', *splat_args, {:out => log_file, :err => log_file})
       Process.detach(pid)
       pid.to_i
     end
@@ -193,7 +196,7 @@ module RunLoop
     def templates
       @instruments_templates ||= lambda do
         args = ['instruments', '-s', 'templates']
-        hash = xcrun.exec(args, log_cmd: true)
+        hash = xcrun.run_command_in_context(args, log_cmd: true)
         hash[:out].chomp.split("\n").map do |elm|
           stripped = elm.strip.tr('"', '')
           if stripped == '' || stripped == 'Known Templates:'
@@ -215,8 +218,12 @@ module RunLoop
           udid = line[DEVICE_UDID_REGEX, 0]
           if udid
             version = line[VERSION_REGEX, 0]
-            name = line.split('(').first.strip
-            RunLoop::Device.new(name, version, udid)
+            if version
+              name = line.split('(').first.strip
+              if name
+                RunLoop::Device.new(name, version, udid)
+              end
+            end
           else
             nil
           end
@@ -269,7 +276,7 @@ module RunLoop
     def fetch_devices
       @device_hash ||= lambda do
         args = ['instruments', '-s', 'devices']
-        xcrun.exec(args, log_cmd: true)
+        xcrun.run_command_in_context(args, log_cmd: true)
       end.call
     end
 

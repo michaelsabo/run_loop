@@ -11,11 +11,63 @@ module RunLoop
     #
     # Try 3 times for 10 seconds each try with a sleep of 2 seconds
     # between tries.
+    #
+    # You can override these values if they do not work in your environment.
+    #
+    # For cucumber users, the best place to override would be in your
+    # features/support/env.rb.
+    #
+    # For example:
+    #
+    # RunLoop::DylibInjector::RETRY_OPTIONS[:timeout] = 60
     RETRY_OPTIONS = {
       :tries => 3,
       :interval => 2,
-      :timeout => 10
+      :timeout => RunLoop::Environment.ci? ? 40 : 20
     }
+
+    # Options for controlling dylib injection
+    #
+    # You can override these values if they do not work in your environment.
+    #
+    # For cucumber users, the best place to override would be in your
+    # features/support/env.rb.
+    #
+    # For example:
+    #
+    # RunLoop::DylibInjector::OPTIONS[:injection_delay] = 10.0
+    OPTIONS = {
+      # Starting in Xcode 9, some apps need additional time to launch
+      # completely.
+      #
+      # If lldb interupts the app before it can accept a 'dlopen' command,
+      # the app will never finish launching - even on a retry.
+      injection_delay: RunLoop::Environment.ci? ? 1.0 : 5.0
+    }
+
+    # Extracts the value of :inject_dylib from options Hash.
+    # @param options [Hash] arguments passed to {RunLoop.run}
+    # @return [String, nil] If the options contains :inject_dylibs and it is a
+    #  path to a dylib that exists, return the path.  Otherwise return nil or
+    #  raise an error.
+    # @raise [RuntimeError] If :inject_dylib points to a path that does not exist.
+    # @raise [ArgumentError] If :inject_dylib is not a String.
+    def self.dylib_path_from_options(options)
+      inject_dylib = options.fetch(:inject_dylib, nil)
+      return nil if inject_dylib.nil?
+      if !inject_dylib.is_a? String
+        raise ArgumentError, %Q[
+
+Expected :inject_dylib to be a path to a dylib, but found '#{inject_dylib}'
+
+]
+      end
+      dylib_path = File.expand_path(inject_dylib)
+      unless File.exist?(dylib_path)
+        raise "Cannot load dylib.  The file '#{dylib_path}' does not exist."
+      end
+      dylib_path
+    end
 
     # @!attribute [r] process_name
     # The name of the process to inject the dylib into.  This should be obtained
@@ -61,7 +113,7 @@ module RunLoop
       hash = nil
       success = false
       begin
-        hash = xcrun.exec(["lldb", "--no-lldbinit", "--source", script_path], options)
+        hash = xcrun.run_command_in_context(["lldb", "--no-lldbinit", "--source", script_path], options)
         pid = hash[:pid]
         exit_status = hash[:exit_status]
         success = exit_status == 0
@@ -92,6 +144,10 @@ module RunLoop
     end
 
     def retriable_inject_dylib(options={})
+      delay = OPTIONS[:injection_delay]
+      RunLoop.log_debug("Delaying dylib injection by #{delay} seconds to allow app to finish launching")
+      sleep(delay)
+
       merged_options = RETRY_OPTIONS.merge(options)
 
       tries = merged_options[:tries]

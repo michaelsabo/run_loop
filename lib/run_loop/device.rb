@@ -1,7 +1,11 @@
 module RunLoop
   class Device
 
+    require 'securerandom'
     include RunLoop::Regex
+
+    require "run_loop/shell"
+    include RunLoop::Shell
 
     # Starting in Xcode 7, iOS 9 simulators have a new "booting" state.
     #
@@ -27,7 +31,7 @@ module RunLoop
       # exceeded - if the default 30 seconds has passed, the
       # simulator is probably stable enough for subsequent
       # operations.
-      :timeout => RunLoop::Environment.ci? ? 120 : 30
+      :timeout => RunLoop::Environment.ci? ? 240 : 120
     }
 
     attr_reader :name
@@ -36,9 +40,7 @@ module RunLoop
     attr_reader :state
     attr_reader :simulator_root_dir
     attr_reader :simulator_accessibility_plist_path
-    attr_reader :simulator_preferences_plist_path
     attr_reader :simulator_log_file_path
-    attr_reader :pbuddy
 
     # Create a new device.
     #
@@ -91,16 +93,13 @@ module RunLoop
     # @return [RunLoop::Device] A device that matches `udid_or_name`.
     # @raise [ArgumentError] If no matching device can be found.
     def self.device_with_identifier(udid_or_name, options={})
-      if options.is_a?(RunLoop::SimControl)
-        raise ArgumentError, %q[Support for the 'sim_control' argument has been
-removed (1.5.0).  It has been replaced by an options hash with two keys:
-:simctl and :instruments. Please update your sources.))]
+      if options[:xcode]
+        RunLoop.log_warn("device_with_identifier no longer uses :xcode option")
       end
 
       default_options = {
         :simctl => RunLoop::Simctl.new,
         :instruments => RunLoop::Instruments.new,
-        :xcode => RunLoop::Xcode.new
       }
 
       merged_options = default_options.merge(options)
@@ -108,10 +107,9 @@ removed (1.5.0).  It has been replaced by an options hash with two keys:
       instruments = merged_options[:instruments]
       simctl = merged_options[:simctl]
 
-      xcode = RunLoop::Xcode.new
       simulator = simctl.simulators.detect do |sim|
-        sim.instruments_identifier(xcode) == udid_or_name ||
-              sim.udid == udid_or_name
+        sim.udid == udid_or_name ||
+          sim.simulator_instruments_identifier_same_as?(udid_or_name)
       end
 
       return simulator if !simulator.nil?
@@ -126,6 +124,22 @@ removed (1.5.0).  It has been replaced by an options hash with two keys:
       raise ArgumentError, "Could not find a device with a UDID or name matching '#{udid_or_name}'"
     end
 
+    # iPhone 8 10.3.1 is the same as iPhone 10.3 when comparing identifiers
+    def simulator_instruments_identifier_same_as?(identifier)
+      instruments_id = instruments_identifier
+      return true if instruments_id == identifier
+
+      model_part = identifier.split(" (").first
+      return false if model_part != name
+
+      version_part = RunLoop::Version.new(identifier[RunLoop::Regex::VERSION_REGEX])
+
+      return false if version.major != version_part.major
+      return false if version.minor != version_part.minor
+
+      true
+    end
+
     # @!visibility private
     #
     # Please don't call this method.  It is for internal use only.  The behavior
@@ -133,7 +147,7 @@ removed (1.5.0).  It has been replaced by an options hash with two keys:
     #
     # @param [Hash] options The launch options passed to RunLoop::Core
     # @param [RunLoop::Xcode] xcode An Xcode instance
-    # @param [RunLoop::Simctl] simctl A SimControl instance
+    # @param [RunLoop::Simctl] simctl A Simctl instance
     # @param [RunLoop::Instruments] instruments An Instruments instance
     #
     # @raise [ArgumentError] If "device" is detected as the device target and
@@ -184,21 +198,21 @@ removed (1.5.0).  It has been replaced by an options hash with two keys:
     # @return [String] An instruments-ready device identifier.
     # @raise [RuntimeError] If trying to obtain a instruments-ready identifier
     #  for a simulator when Xcode < 6.
-    def instruments_identifier(xcode)
+    def instruments_identifier(xcode=nil)
+      if xcode
+        RunLoop.deprecated("3.0.0",
+                           "instruments_identifier no longer takes an argument")
+      end
       if physical_device?
         udid
       else
-        if version == RunLoop::Version.new('7.0.3')
-          version_part = version.to_s
+        if version.patch
+          version_part = "#{version.major}.#{version.minor}.#{version.patch}"
         else
           version_part = "#{version.major}.#{version.minor}"
         end
 
-        if xcode.version_gte_7?
-          "#{name} (#{version_part})"
-        else
-          "#{name} (#{version_part} Simulator)"
-        end
+        "#{name} (#{version_part})"
       end
     end
 
@@ -223,6 +237,32 @@ version: #{version}
     # @return [Boolean] Returns true if this is a simulator.
     def simulator?
       !physical_device?
+    end
+
+    # Is the iOS version installed on this device compatible with an Xcode
+    # version?
+    def compatible_with_xcode_version?(xcode_version)
+      ios_version = version
+
+      if ios_version.major < (xcode_version.major + 2)
+        if physical_device?
+          return true
+        else
+          # iOS 8 simulators are available in Xcode 9
+          # iOS 7 simulators are not available in Xcode 9
+          if ios_version.major <= (xcode_version.major - 2)
+            return false
+          else
+            return true
+          end
+        end
+      end
+
+      if ios_version.major == (xcode_version.major + 2)
+        return ios_version.minor <= xcode_version.minor
+      end
+
+      false
     end
 
     # Return the instruction set for this device.
@@ -267,181 +307,95 @@ version: #{version}
         raise RuntimeError, 'This method is available only for simulators'
       end
 
-      @state = fetch_simulator_state
+      @state = simctl.simulator_state_as_string(self)
     end
 
     # @!visibility private
     def simulator_root_dir
-      @simulator_root_dir ||= lambda {
-        return nil if physical_device?
-        File.join(CORE_SIMULATOR_DEVICE_DIR, udid)
-      }.call
+      return nil if physical_device?
+      @simulator_root_dir ||= File.join(CORE_SIMULATOR_DEVICE_DIR, udid)
     end
 
     # @!visibility private
     def simulator_accessibility_plist_path
-      @simulator_accessibility_plist_path ||= lambda {
-        return nil if physical_device?
-        File.join(simulator_root_dir, 'data/Library/Preferences/com.apple.Accessibility.plist')
-      }.call
-    end
+      return nil if physical_device?
 
-    # @!visibility private
-    def simulator_preferences_plist_path
-      @simulator_preferences_plist_path ||= lambda {
-        return nil if physical_device?
-        File.join(simulator_root_dir, 'data/Library/Preferences/com.apple.Preferences.plist')
-      }.call
+      directory = File.join(simulator_root_dir, "data", "Library", "Preferences")
+      pbuddy.ensure_plist(directory, "com.apple.Accessibility.plist")
     end
 
     # @!visibility private
     def simulator_log_file_path
-      @simulator_log_file_path ||= lambda {
-        return nil if physical_device?
-        File.join(CORE_SIMULATOR_LOGS_DIR, udid, 'system.log')
-      }.call
+      return nil if physical_device?
+      @simulator_log_file_path ||= File.join(CORE_SIMULATOR_LOGS_DIR, udid,
+                                             'system.log')
     end
 
     # @!visibility private
     def simulator_device_plist
-      @simulator_device_plist ||= lambda do
-        return nil if physical_device?
-        File.join(simulator_root_dir, 'device.plist')
-      end.call
+      return nil if physical_device?
+      pbuddy.ensure_plist(simulator_root_dir, "device.plist")
     end
 
     # @!visibility private
     def simulator_global_preferences_path
-      @simulator_global_preferences_path ||= lambda do
-        return nil if physical_device?
-        File.join(simulator_root_dir, "data/Library/Preferences/.GlobalPreferences.plist")
-      end.call
+      return nil if physical_device?
+      directory = File.join(simulator_root_dir, "data", "Library", "Preferences")
+      pbuddy.ensure_plist(directory, ".GlobalPreferences.plist")
     end
 
     # @!visibility private
-    # Is this the first launch of this Simulator?
-    #
-    # TODO Needs unit and integration tests.
-    def simulator_first_launch?
-      megabytes = simulator_data_dir_size
-
-      if version >= RunLoop::Version.new('9.0')
-        megabytes < 20
-      elsif version >= RunLoop::Version.new('8.0')
-        megabytes < 12
-      else
-        megabytes < 8
-      end
+    # In megabytes
+    def simulator_size_on_disk
+      data_path = File.join(simulator_root_dir, 'data')
+      RunLoop::Directory.size(data_path, :mb)
     end
 
     # @!visibility private
-    # The size of the simulator data/ directory.
-    #
-    # TODO needs unit tests.
-    def simulator_data_dir_size
-      path = File.join(simulator_root_dir, 'data')
-      RunLoop::Directory.size(path, :mb)
-    end
-
-    # @!visibility private
-    #
-    # Waits for three conditions:
-    #
-    # 1. The SHA sum of the simulator data/ directory to be stable.
-    # 2. No more log messages are begin generated
-    # 3. 1 and 2 must hold for 1 seconds.
-    #
-    # When the simulator version is >= iOS 9 _and_ it is the first launch of
-    # the simulator after a reset or a new simulator install, a fourth condition
-    # is added:
-    #
-    # 4. The first three conditions must be met a second time.
-    #
-    # and the quiet time is increased to 2.0.
     def simulator_wait_for_stable_state
-      require 'securerandom'
+      required = simulator_required_child_processes
 
-      # How long to wait between stability checks.
-      delay = 0.5
-
-      first_launch = false
-
-      # At launch there is a brief moment when the SHA and
-      # the log file are are stable.  Then a bunch of activity
-      # occurs.  This is the quiet time.
-      #
-      # Starting in iOS 9, simulators display at _booting_ screen
-      # at first launch.  At first launch, these simulators need
-      # a much longer quiet time.
-      if version >= RunLoop::Version.new('9.0')
-        first_launch = simulator_data_dir_size < 20
-        quiet_time = 2.0
-      else
-        quiet_time = 1.0
-      end
-
-      now = Time.now
       timeout = SIM_STABLE_STATE_OPTIONS[:timeout]
+      now = Time.now
       poll_until = now + timeout
-      quiet = now + quiet_time
 
-      is_stable = false
+      RunLoop.log_debug("Waiting for simulator to stabilize with timeout: #{timeout} seconds")
+      footprint = simulator_size_on_disk
 
-      path = File.join(simulator_root_dir, 'data')
-      current_sha = nil
-      sha_fn = lambda do |data_dir|
-        begin
-          # Typically, this returns in < 0.3 seconds.
-          Timeout.timeout(10, TimeoutError) do
-            # Errors are ignorable and users are confused by the messages.
-            options = { :handle_errors_by => :ignoring }
-            RunLoop::Directory.directory_digest(data_dir, options)
-          end
-        rescue => _
-          SecureRandom.uuid
+      if version.major >= 9 && footprint < 18
+        first_launch = true
+      elsif version.major == 8
+        if version.minor >= 3 && footprint < 19
+          first_launch = true
+        else
+          first_launch = footprint < 11
         end
-      end
-
-      RunLoop.log_debug("Waiting for simulator to stabilize with timeout: #{timeout}")
-      if first_launch
-        RunLoop.log_debug("Detected the first launch of an iOS >= 9.0 Simulator")
-      end
-
-      current_line = nil
-
-      while Time.now < poll_until do
-        latest_sha = sha_fn.call(path)
-        latest_line = last_line_from_simulator_log_file
-
-        is_stable = current_sha == latest_sha && current_line == latest_line
-
-        if is_stable
-          if Time.now > quiet
-            if first_launch
-              RunLoop.log_debug("First launch detected - allowing additional time to stabilize")
-              first_launch = false
-              sleep 1.2
-              quiet = Time.now + quiet_time
-            else
-              break
-            end
-          else
-            quiet = Time.now + quiet_time
-          end
-        end
-
-        current_sha = latest_sha
-        current_line = latest_line
-        sleep delay
-      end
-
-      if is_stable
-        elapsed = Time.now - now
-        stabilized = elapsed - quiet_time
-        RunLoop.log_debug("Simulator stable after #{stabilized} seconds")
-        RunLoop.log_debug("Waited a total of #{elapsed} seconds for simulator to stabilize")
       else
-        RunLoop.log_debug("Timed out: simulator not stable after #{timeout} seconds")
+        first_launch = false
+      end
+
+      while !required.empty? && Time.now < poll_until do
+        sleep(0.5)
+        required = required.map do |process_name|
+          if simulator_process_running?(process_name)
+            nil
+          else
+            process_name
+          end
+        end.compact
+      end
+
+      if required.empty?
+        elapsed = Time.now - now
+        RunLoop.log_debug("All required simulator processes have started after #{elapsed}")
+        if first_launch
+          RunLoop.log_debug("Detected a first launch, waiting a little longer - footprint was #{footprint} MB")
+          sleep(RunLoop::Environment.ci? ? 10 : 5)
+        end
+        RunLoop.log_debug("Waited for #{elapsed} seconds for simulator to stabilize")
+      else
+        RunLoop.log_debug("Timed out after #{timeout} seconds waiting for simulator to stabilize")
+        RunLoop.log_debug("These simulator processes did not start: #{required.join(",")}")
       end
     end
 
@@ -515,46 +469,75 @@ version: #{version}
 
       global_plist = simulator_global_preferences_path
 
-      cmd = [
-        "PlistBuddy",
-        "-c",
-        "Add :AppleLanguages:0 string '#{lang_code}'",
-        global_plist
-      ]
+      begin
+        pbuddy.unshift_array("AppleLanguages", "string", lang_code,
+                             global_plist)
+      rescue RuntimeError => e
+        raise RuntimeError, %Q[
+Could not update the Simulator languages.
 
-      # RunLoop::PlistBuddy cannot add items to arrays.
-      xcrun.exec(cmd, {:log_cmd => true})
+#{e.message}
+
+]
+      end
 
       simulator_languages
     end
 
+    # @!visibility private
+    def simulator_running_app_details
+      pids = simulator_running_app_pids
+      running_apps = {}
+
+      pids.each do |pid|
+        cmd = ["ps", "-o", "comm=", "-p", pid.to_s]
+
+        hash = run_shell_command(cmd)
+        out = hash[:out]
+
+        if out.nil? || out == "" || out.strip.nil?
+          nil
+        else
+          name = out.strip.split("/").last
+
+          cmd = ["ps", "-o", "command=", "-p", pid.to_s]
+          hash = run_shell_command(cmd)
+          out = hash[:out]
+
+          if out.nil? || out == "" || out.strip.nil?
+            nil
+          else
+            tokens = out.split("#{name} ")
+
+            # No arguments
+            if tokens.count == 1
+              args = ""
+            else
+              args = tokens.last.strip
+            end
+
+            running_apps[name] = {
+              args: args,
+              command: out.strip
+            }
+          end
+        end
+      end
+
+      running_apps
+    end
+
+=begin
+  PRIVATE METHODS
+=end
+
     private
 
+    attr_reader :pbuddy, :simctl, :xcrun, :xcode
+
     # @!visibility private
-    # TODO write a unit test.
-    def last_line_from_simulator_log_file
-      file = simulator_log_file_path
-
-      return nil if !File.exist?(file)
-
-      debug = RunLoop::Environment.debug?
-
-      begin
-        io = File.open(file, 'r')
-        io.seek(-100, IO::SEEK_END)
-
-        line = io.readline
-      rescue StandardError => e
-        RunLoop.log_error("Caught #{e} while reading simulator log file") if debug
-      ensure
-        io.close if io && !io.closed?
-      end
-
-      if line
-        line.chomp
-      else
-        line
-      end
+    def xcode
+      @xcode ||= RunLoop::Xcode.new
     end
 
     # @!visibility private
@@ -568,50 +551,22 @@ version: #{version}
     end
 
     # @!visibility private
-    def detect_state_from_line(line)
-
-      if line[/unavailable/, 0]
-        RunLoop.log_debug("Simulator state is unavailable: #{line}")
-        return 'Unavailable'
-      end
-
-      state = line[/(Booted|Shutdown|Shutting Down)/,0]
-
-      if state.nil?
-        RunLoop.log_debug("Simulator state is unknown: #{line}")
-        'Unknown'
-      else
-        state
-      end
+    def simctl
+      @simctl ||= RunLoop::Simctl.new
     end
 
     # @!visibility private
-    def fetch_simulator_state
-      if physical_device?
-        raise RuntimeError, 'This method is available only for simulators'
-      end
-
-      args = ['simctl', 'list', 'devices']
-      hash = xcrun.exec(args)
-      out = hash[:out]
-
-      matched_line = out.split("\n").find do |line|
-        line.include?(udid)
-      end
-
-      if matched_line.nil?
-        raise RuntimeError,
-              "Expected a simulator with udid '#{udid}', but found none"
-      end
-
-      detect_state_from_line(matched_line)
-    end
+    CORE_SIMULATOR_DEVICE_DIR = File.join(RunLoop::Environment.user_home_directory,
+                                          "Library",
+                                          "Developer",
+                                          "CoreSimulator",
+                                          "Devices")
 
     # @!visibility private
-    CORE_SIMULATOR_DEVICE_DIR = File.expand_path('~/Library/Developer/CoreSimulator/Devices')
-
-    # @!visibility private
-    CORE_SIMULATOR_LOGS_DIR = File.expand_path('~/Library/Logs/CoreSimulator')
+    CORE_SIMULATOR_LOGS_DIR = File.join(RunLoop::Environment.user_home_directory,
+                                        "Library",
+                                        "Logs",
+                                        "CoreSimulator")
 
     # @!visibility private
     def self.device_from_options(options)
@@ -651,6 +606,129 @@ version: #{version}
     end
 
     # @!visibility private
+    def simulator_required_child_processes
+      # required: ["SimulatorBridge", "medialibraryd"]
+      @simulator_required_child_processes ||= begin
+        if xcode.version_gte_100?
+          required = ["backboardd", "installd", "SpringBoard"]
+        elsif xcode.version_gte_83? && version.major > 10
+          required = ["backboardd", "installd", "SpringBoard", "suggestd"]
+        else
+          required = ["backboardd", "installd", "SimulatorBridge", "SpringBoard"]
+        end
+
+        if xcode.version_gte_90?
+          required << "filecoordinationd"
+        elsif xcode.version_gte_8? && (version.major > 8 && version.major < 11)
+          required << "medialibraryd"
+        end
+
+        if simulator_is_ipad? && version.major == 9
+          required << "com.apple.audio.SystemSoundServer-iOS-Simulator"
+        end
+
+        required
+      end
+    end
+
+    # @!visibility private
+    def simulator_launchd_sim_pid
+      waiter = RunLoop::ProcessWaiter.new("launchd_sim")
+      waiter.wait_for_any
+
+      return nil if !waiter.running_process?
+
+      pid = nil
+
+      waiter.pids.each do |launchd_sim_pid|
+        cmd = ["ps", "x", "-o", "pid,command", launchd_sim_pid.to_s]
+        hash = run_shell_command(cmd)
+        out = hash[:out]
+        process_line = out.split($-0)[1]
+        if !process_line || process_line == ""
+          false
+        else
+          pid = process_line.split(" ").first.strip
+          if process_line[/#{udid}/] == nil
+            RunLoop.log_debug("Terminating launchd_sim process with pid #{pid}")
+            RunLoop::ProcessTerminator.new(pid, "KILL", "launchd_sim").kill_process
+            pid = nil
+          end
+        end
+      end
+      pid
+    end
+
+    # @!visibility private
+    def process_parent_is_launchd_sim?(pid)
+      launchd_sim_pid = simulator_launchd_sim_pid
+      return false if !launchd_sim_pid
+
+      cmd = ["ps", "x", "-o", "ppid=", "-p", pid.to_s]
+      hash = run_shell_command(cmd)
+
+      out = hash[:out]
+      if out.nil? || out == ""
+        false
+      else
+        ppid = out.strip
+        ppid == launchd_sim_pid.to_s
+      end
+    end
+
+    # @!visibility private
+    def simulator_process_running?(process_name)
+      waiter = RunLoop::ProcessWaiter.new(process_name)
+      waiter.pids.any? do |pid|
+        process_parent_is_launchd_sim?(pid)
+      end
+    end
+
+    # @!visibility private
+    def simulator_data_directory_sha
+      path = File.join(simulator_root_dir, 'data')
+      begin
+        # Typically, this returns in < 0.3 seconds.
+        Timeout.timeout(10, TimeoutError) do
+          # Errors are ignorable and users are confused by the messages.
+          options = { :handle_errors_by => :ignoring }
+          RunLoop::Directory.directory_digest(path, options)
+        end
+      rescue => _
+        SecureRandom.uuid
+      end
+    end
+
+    # @!visibility private
+    def simulator_log_file_sha
+      file = simulator_log_file_path
+
+      return nil if !File.exist?(file)
+
+      sha = OpenSSL::Digest::SHA256.new
+
+      begin
+        sha << File.read(file)
+      rescue => _
+        sha = SecureRandom.uuid
+      end
+
+      sha
+    end
+
+    # @!visibility private
+    # Value of <UDID>/.device.plist 'deviceType' key.
+    def simulator_device_type
+      plist = File.join(simulator_device_plist)
+      pbuddy.plist_read("deviceType", plist)
+    end
+
+    # @!visibility private
+    def simulator_is_ipad?
+      simulator_device_type[/iPad/, 0]
+    end
+
+    # @!visibility private
     def self.ensure_physical_device_connected(identifier, options)
       if identifier.nil?
         env = self.device_from_environment
@@ -683,6 +761,30 @@ https://github.com/calabash/calabash-ios/wiki/Testing-on-Physical-Devices
 ]
       end
       true
+    end
+
+    # @!visibility private
+    def simulator_running_app_pids
+      simulator_running_user_app_pids +
+        simulator_running_system_app_pids
+    end
+
+    # @!visibility private
+    def simulator_running_user_app_pids
+      path = File.join(udid, "data", "Containers", "Bundle")
+      RunLoop::ProcessWaiter.pgrep_f(path)
+    end
+
+    # @!visibility private
+    def simulator_running_system_app_pids
+      base_dir = xcode.developer_dir
+      if xcode.version_gte_90?
+        sim_apps_dir = "Platforms/iPhoneOS.platform/Developer/Library/CoreSimulator/Profiles/Runtimes/iOS.simruntime/Contents/Resources/RuntimeRoot/Applications"
+      else
+        sim_apps_dir = "Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk/Applications"
+      end
+      path = File.expand_path(File.join(base_dir, sim_apps_dir))
+      RunLoop::ProcessWaiter.pgrep_f(path)
     end
   end
 end

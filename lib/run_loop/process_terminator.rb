@@ -70,8 +70,12 @@ module RunLoop
       rescue SignalException => e
         raise e.message
       end
-      RunLoop.log_debug("Waiting for #{display_name} with pid '#{pid}' to terminate")
-      wait_for_process_to_terminate
+      if options[:timeout].to_f <= 0.0
+        RunLoop.log_debug("Not waiting for process #{display_name} : #{pid} to terminate")
+      else
+        RunLoop.log_debug("Waiting for #{display_name} with pid '#{pid}' to terminate")
+        wait_for_process_to_terminate
+      end
     end
 
     # Is the process `pid` alive?
@@ -101,7 +105,7 @@ module RunLoop
     # @!visibility private
     # The details of the process reported by `ps`.
     def ps_details
-      `xcrun ps -p #{pid} -o pid,comm | grep #{pid}`.strip
+      `ps -p #{pid} -o pid,comm | grep #{pid}`.strip
     end
 
     # @!visibility private

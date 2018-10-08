@@ -68,14 +68,14 @@ describe RunLoop::DylibInjector do
       expect(lldb).to receive(:write_script).and_return script
       cmd = ["lldb", "--no-lldbinit", "--source", script]
 
-      expect(xcrun).to receive(:exec).with(cmd, options).and_return(hash)
+      expect(xcrun).to receive(:run_command_in_context).with(cmd, options).and_return(hash)
 
       expect(lldb.inject_dylib(timeout)).to be_truthy
     end
 
     describe "returns false" do
       it "when xcrun times out" do
-        expect(xcrun).to receive(:exec).and_raise RunLoop::Xcrun::TimeoutError
+        expect(xcrun).to receive(:run_command_in_context).and_raise RunLoop::Xcrun::TimeoutError
 
         expect(lldb.inject_dylib(timeout)).to be_falsey
       end
@@ -84,7 +84,7 @@ describe RunLoop::DylibInjector do
         hash[:exit_status] = 1
         hash[:out] = "Line 0\nLine 1\nLine 2"
 
-        expect(xcrun).to receive(:exec).and_return(hash)
+        expect(xcrun).to receive(:run_command_in_context).and_return(hash)
 
         expect(lldb.inject_dylib(timeout)).to be_falsey
       end
@@ -102,7 +102,8 @@ describe RunLoop::DylibInjector do
         }
 
         expect(lldb).to receive(:inject_dylib).with(3).exactly(5).times.and_return false
-        expect(lldb).to receive(:sleep).with(2).exactly(5).times.and_return true
+        # First sleep is the arbitrary delay.
+        expect(lldb).to receive(:sleep).exactly(6).times.and_return true
 
         expect do
           lldb.retriable_inject_dylib(options)
@@ -115,7 +116,8 @@ describe RunLoop::DylibInjector do
         timeout = RunLoop::DylibInjector::RETRY_OPTIONS[:timeout]
 
         expect(lldb).to receive(:inject_dylib).with(timeout).exactly(tries).times.and_return false
-        expect(lldb).to receive(:sleep).with(interval).exactly(tries).times.and_return true
+        # First sleep is the arbitrary delay.
+        expect(lldb).to receive(:sleep).exactly(tries + 1).times.and_return true
 
         expect do
           lldb.retriable_inject_dylib

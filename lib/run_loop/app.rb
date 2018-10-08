@@ -16,7 +16,21 @@ module RunLoop
       @path = File.expand_path(app_bundle_path)
 
       if !App.valid?(app_bundle_path)
-        raise ArgumentError,
+        if App.cached_app_on_simulator?(app_bundle_path)
+          raise RuntimeError, %Q{
+App is "cached" on the simulator.
+
+#{app_bundle_path}
+
+This can happen if there was an incomplete install or uninstall.
+
+Try manually deleting the application data container and relaunching the simulator.
+
+$ rm -r #{File.dirname(app_bundle_path)}
+$ run-loop simctl manage-processes
+}
+        else
+          raise ArgumentError,
 %Q{App does not exist at path or is not an app bundle.
 
 #{app_bundle_path}
@@ -28,6 +42,7 @@ Bundle must:
 3. contain an Info.plist,
 4. and the app binary (CFBundleExecutable) must exist
 }
+        end
       end
     end
 
@@ -69,6 +84,19 @@ Bundle must:
       return false if !self.info_plist_exist?(app_bundle_path)
       return false if !self.executable_file_exist?(app_bundle_path)
       true
+    end
+
+    # @!visibility private
+    #
+    # Starting in Xcode 10 betas, this can happen if there was an incomplete
+    # install or uninstall.
+    def self.cached_app_on_simulator?(app_bundle_path)
+      return false if Dir[File.join(app_bundle_path, "**/*")].length != 2
+      return false if !app_bundle_path[RunLoop::Regex::CORE_SIMULATOR_UDID_REGEX]
+      [File.join(app_bundle_path, "Info.plist"),
+       File.join(app_bundle_path, "Icon.png")].all? do |file|
+        File.exist?(file)
+      end
     end
 
     # Returns the Info.plist path.
@@ -129,6 +157,14 @@ Bundle must:
     end
 
     # @!visibility private
+    # Return the fingerprint of the linked server
+    def calabash_server_id
+      name = plist_buddy.plist_read("CFBundleExecutable", info_plist_path)
+      app_executable = File.join(self.path, name)
+      strings(app_executable).server_id
+    end
+
+    # @!visibility private
     def codesign_info
       RunLoop::Codesign.info(path)
     end
@@ -180,7 +216,7 @@ Bundle must:
     # See #marketing_version
     alias_method :short_bundle_version, :marketing_version
 
-    # Returns the CFBundleVersionString of the app as Version instance.
+    # Returns the CFBundleVersion of the app as Version instance.
     #
     # Apple docs:
     #
@@ -195,14 +231,14 @@ Bundle must:
     # @return [RunLoop::Version, nil] Returns a Version instance if the
     #  CFBundleVersion string is well formed and nil if not.
     def build_version
-      string = plist_buddy.plist_read("CFBundleVersionString", info_plist_path)
+      string = plist_buddy.plist_read("CFBundleVersion", info_plist_path)
       begin
         version = RunLoop::Version.new(string)
       rescue
         if string && string != ""
-          RunLoop.log_debug("CFBundleVersionString: '#{string}' is not a well formed version string")
+          RunLoop.log_debug("CFBundleVersion: '#{string}' is not a well formed version string")
         else
-          RunLoop.log_debug("CFBundleVersionString is not defined in Info.plist")
+          RunLoop.log_debug("CFBundleVersion is not defined in Info.plist")
         end
         version = nil
       end
@@ -218,7 +254,7 @@ Bundle must:
       executables = []
       Dir.glob("#{path}/**/*") do |file|
         next if skip_executable_check?(file)
-        if otool(file).executable?
+        if otool.executable?(file)
           executables << file
         end
       end
@@ -262,9 +298,13 @@ Bundle must:
     end
 
     # @!visibility private
-    # An otool factory.
-    def otool(file)
-      RunLoop::Otool.new(file)
+    def otool
+      @otool ||= RunLoop::Otool.new(xcode)
+    end
+
+    # @!visibility private
+    def xcode
+      @xcode ||= RunLoop::Xcode.new
     end
 
     # @!visibility private
@@ -282,7 +322,8 @@ Bundle must:
         lproj_asset?(file) ||
         code_signing_asset?(file) ||
         core_data_asset?(file) ||
-        font?(file)
+        font?(file) ||
+        build_artifact?(file)
     end
 
     # @!visibility private
@@ -365,7 +406,12 @@ Bundle must:
     def font?(file)
       extension = File.extname(file)
 
-      extension == ".tff" || extension == ".otf"
+      extension == ".ttf" || extension == ".otf"
+    end
+
+    # @!visibility private
+    def build_artifact?(file)
+      File.extname(file) == ".xcconfig"
     end
   end
 end

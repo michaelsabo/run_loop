@@ -42,7 +42,9 @@ module RunLoop
       def ignore_xcodeproj?(path)
         path[/CordovaLib/, 0] ||
           path[/Pods/, 0] ||
-          path[/Carthage/, 0]
+          path[/Carthage/, 0] ||
+          path[/Airship(Kit|Lib)/, 0] ||
+          path[/google-plus-ios-sdk/, 0]
       end
 
       # @!visibility private
@@ -133,12 +135,16 @@ module RunLoop
       # @!visibility private
       def derived_data
         RunLoop::Environment.derived_data ||
-          File.expand_path("~/Library/Developer/Xcode/DerivedData")
+          File.join(RunLoop::Environment.user_home_directory,
+                    "Library", "Developer", "Xcode", "DerivedData")
       end
 
       # @!visibility private
       def xcode_preferences_plist
-        File.expand_path('~/Library/Preferences/com.apple.dt.Xcode.plist')
+        File.join(RunLoop::Environment.user_home_directory,
+                  "Library",
+                  "Preferences",
+                  "com.apple.dt.Xcode.plist")
       end
 
       # @!visibility private

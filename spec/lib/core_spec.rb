@@ -25,6 +25,16 @@ describe RunLoop::Core do
   end
 
   describe '.default_tracetemplate' do
+
+    it "raises an error when Xcode >= 8.0" do
+      expect(xcode).to receive(:version_gte_8?).and_return(true)
+      allow(instruments).to receive(:xcode).and_return(xcode)
+
+      expect do
+        RunLoop::Core.default_tracetemplate(instruments)
+      end.to raise_error RuntimeError, /There is no Automation template for this/
+    end
+
     it 'raises an error when template cannot be found' do
       templates =
             [
@@ -33,183 +43,70 @@ describe RunLoop::Core do
                   "/Xcode/6.2/Xcode.app/Contents/Applications/Instruments.app/Contents/Resources/templates/System Trace.tracetemplate",
                   "/Xcode/6.2/Xcode.app/Contents/Applications/Instruments.app/Contents/Resources/templates/Time Profiler.tracetemplate",
             ]
+      allow(instruments).to receive(:xcode).and_return(xcode)
       expect(instruments).to receive(:templates).and_return(templates)
+      expect(xcode).to receive(:version_gte_8?).and_return(false)
 
       expect do
         RunLoop::Core.default_tracetemplate(instruments)
-      end.to raise_error(RuntimeError)
-    end
-  end
-
-  describe "UIA strategy" do
-    let(:xcode) { Resources.shared.xcode }
-    let(:device) { Resources.shared.device }
-    let(:simulator) { Resources.shared.simulator }
-    let(:ios8) { RunLoop::Version.new("8.0") }
-    let(:ios9) { RunLoop::Version.new("9.0") }
-    let(:ios7) { RunLoop::Version.new("7.0") }
-
-    describe ".default_uia_strategy" do
-      it ":host for Xcode >= 7.0" do
-        expect(xcode).to receive(:version_gte_7?).and_return(true)
-
-        expect(RunLoop::Core.default_uia_strategy(device, xcode)).to be == :host
-      end
-
-      describe "all other Xcode versions" do
-        before do
-          expect(xcode).to receive(:version_gte_7?).at_least(:once).and_return(false)
-        end
-
-        describe "physical devices" do
-           it ":host for iOS >= 8.0" do
-             expect(device).to receive(:version).and_return(ios8)
-             expect(RunLoop::Core.default_uia_strategy(device, xcode)).to be == :host
-
-             expect(device).to receive(:version).and_return(ios9)
-             expect(RunLoop::Core.default_uia_strategy(device, xcode)).to be == :host
-           end
-
-          it ":preferences for iOS < 8.0" do
-            expect(device).to receive(:version).and_return(ios7)
-            expect(RunLoop::Core.default_uia_strategy(device, xcode)).to be == :preferences
-          end
-        end
-
-        it "simulators in < Xcode 7 environments" do
-          # implies < iOS 9
-          expect(RunLoop::Core.default_uia_strategy(simulator, xcode)).to be == :preferences
-        end
-      end
-    end
-
-    describe ".detect_uia_strategy" do
-      let(:options) { {:uia_strategy => :shared_element } }
-
-      it "respects :uia_strategy option" do
-        actual = RunLoop::Core.detect_uia_strategy(options, device, xcode)
-        expect(actual).to be == options[:uia_strategy]
-      end
-
-      it "falls back on default strategy" do
-        options[:uia_strategy] = nil
-        expect(RunLoop::Core).to receive(:default_uia_strategy).and_return(:shared_element)
-
-        actual = RunLoop::Core.detect_uia_strategy(options, device, xcode)
-        expect(actual).to be == :shared_element
-      end
-
-      it "raises error if strategy is unknown" do
-        options[:uia_strategy] = :unknown
-
-        expect do
-          RunLoop::Core.detect_uia_strategy(options, device, xcode)
-        end.to raise_error ArgumentError, /Invalid strategy/
-      end
+      end.to raise_error RuntimeError,
+                         /Expected instruments to report an Automation tracetemplate/
     end
   end
 
   describe '.default_simulator' do
-    it 'Xcode 6.0*' do
-      expected = 'iPhone 5s (8.0 Simulator)'
-      expect(xcode).to receive(:version).at_least(:once).and_return xcode.v60
+    it 'Xcode >= 8.0' do
+      expected = 'iPhone 7 (10.0)'
+      expect(xcode).to receive(:version).at_least(:once).and_return xcode.v80
       expect(RunLoop::Core.default_simulator(xcode)).to be == expected
     end
 
-    it 'Xcode 6.1*' do
-      expected = 'iPhone 5s (8.1 Simulator)'
-      expect(xcode).to receive(:version).at_least(:once).and_return xcode.v61
+    it 'Xcode >= 8.1' do
+      expected = 'iPhone 7 (10.1)'
+      expect(xcode).to receive(:version).at_least(:once).and_return xcode.v81
       expect(RunLoop::Core.default_simulator(xcode)).to be == expected
     end
 
-    it 'Xcode 6.2*' do
-      expected = 'iPhone 5s (8.2 Simulator)'
-      expect(xcode).to receive(:version).at_least(:once).and_return xcode.v62
+    it 'Xcode >= 8.2' do
+      expected = 'iPhone 7 (10.2)'
+      expect(xcode).to receive(:version).at_least(:once).and_return xcode.v82
       expect(RunLoop::Core.default_simulator(xcode)).to be == expected
     end
 
-    it 'Xcode 6.3*' do
-      expected = 'iPhone 5s (8.3 Simulator)'
-      expect(xcode).to receive(:version).at_least(:once).and_return xcode.v63
+    it 'Xcode >= 8.3' do
+      expected = 'iPhone 7 (10.3)'
+      expect(xcode).to receive(:version).at_least(:once).and_return xcode.v83
       expect(RunLoop::Core.default_simulator(xcode)).to be == expected
     end
 
-    it 'Xcode 6.4*' do
-      expected = 'iPhone 5s (8.4 Simulator)'
-      expect(xcode).to receive(:version).at_least(:once).and_return xcode.v64
+    it 'Xcode >= 9.0' do
+      expected = 'iPhone 8 (11.0)'
+      expect(xcode).to receive(:version).at_least(:once).and_return xcode.v90
       expect(RunLoop::Core.default_simulator(xcode)).to be == expected
     end
 
-    it 'Xcode 7.0*' do
-      expected = 'iPhone 5s (9.0)'
-      expect(xcode).to receive(:version).at_least(:once).and_return xcode.v70
+    it 'Xcode >= 9.1' do
+      expected = 'iPhone 8 (11.1)'
+      expect(xcode).to receive(:version).at_least(:once).and_return xcode.v91
       expect(RunLoop::Core.default_simulator(xcode)).to be == expected
     end
 
-    it 'Xcode 7.1*' do
-      expected = 'iPhone 6s (9.1)'
-      expect(xcode).to receive(:version).at_least(:once).and_return xcode.v71
+    it 'Xcode >= 9.2' do
+      expected = 'iPhone 8 (11.2)'
+      expect(xcode).to receive(:version).at_least(:once).and_return xcode.v92
       expect(RunLoop::Core.default_simulator(xcode)).to be == expected
     end
 
-    it 'Xcode 7.2*' do
-      expected = 'iPhone 6s (9.2)'
-      expect(xcode).to receive(:version).at_least(:once).and_return xcode.v72
+    it 'Xcode >= 9.3' do
+      expected = 'iPhone 8 (11.3)'
+      expect(xcode).to receive(:version).at_least(:once).and_return xcode.v93
       expect(RunLoop::Core.default_simulator(xcode)).to be == expected
     end
 
-    it 'Xcode >= 7.3' do
-      expected = 'iPhone 6s (9.3)'
-      expect(xcode).to receive(:version).at_least(:once).and_return xcode.v73
+    it 'Xcode >= 9.4' do
+      expected = 'iPhone 8 (11.4)'
+      expect(xcode).to receive(:version).at_least(:once).and_return xcode.v94
       expect(RunLoop::Core.default_simulator(xcode)).to be == expected
-    end
-  end
-
-  describe '.above_or_eql_version?' do
-    subject(:a) { RunLoop::Version.new('5.1.1') }
-    subject(:b) { RunLoop::Version.new('6.0') }
-    describe 'returns correct value when' do
-      it 'both args are RunLoop::Version' do
-        expect(RunLoop::Core.above_or_eql_version? a, b).to be == false
-        expect(RunLoop::Core.above_or_eql_version? b, a).to be == true
-      end
-
-      it 'both args are Strings' do
-        expect(RunLoop::Core.above_or_eql_version? a.to_s, b.to_s).to be == false
-        expect(RunLoop::Core.above_or_eql_version? b.to_s, a.to_s).to be == true
-      end
-    end
-  end
-
-  describe '.dylib_path_from_options' do
-    describe 'raises an error' do
-      # @todo this test is probably unnecessary
-      it 'when options argument is not a Hash' do
-        expect { RunLoop::Core.dylib_path_from_options([]) }.to raise_error TypeError
-        expect { RunLoop::Core.dylib_path_from_options(nil) }.to raise_error NoMethodError
-      end
-
-      it 'when :inject_dylib is not a String' do
-        options = { :inject_dylib => true }
-        expect { RunLoop::Core.dylib_path_from_options(options) }.to raise_error ArgumentError
-      end
-
-      it 'when dylib does not exist' do
-        options = { :inject_dylib => 'foo/bar.dylib' }
-        expect { RunLoop::Core.dylib_path_from_options(options) }.to raise_error RuntimeError
-      end
-    end
-
-    describe 'returns' do
-      it 'nil if options does not contain :inject_dylib key' do
-        expect(RunLoop::Core.dylib_path_from_options({})).to be == nil
-      end
-
-      it 'value of :inject_dylib key if the path exists' do
-        path = Resources.shared.sim_dylib_path
-        options = { :inject_dylib => path }
-        expect(RunLoop::Core.dylib_path_from_options(options)).to be == path
-      end
     end
   end
 
@@ -262,78 +159,6 @@ describe RunLoop::Core do
         end
         expect(out.string[/:xcode/]).to be == ':xcode'
         expect(out.string[/:xcode_path/]).to be == ':xcode_path'
-      end
-    end
-  end
-
-  describe '.simulator_target?' do
-    describe 'raises an error' do
-      it 'when options argument is not a Hash' do
-        expect { RunLoop::Core.simulator_target?([]) }.to raise_error TypeError
-        expect { RunLoop::Core.simulator_target?(nil) }.to raise_error NoMethodError
-      end
-    end
-
-    describe 'returns true when' do
-      it 'there is no :device_target key' do
-        expect(RunLoop::Core.simulator_target?({})).to be == true
-      end
-
-      it ":device_target => 'simulator'" do
-        options = { :device_target => 'simulator' }
-        expect(RunLoop::Core.simulator_target?(options)).to be == true
-      end
-
-      it ":device_target => ''" do
-        options = { :device_target => '' }
-        expect(RunLoop::Core.simulator_target?(options)).to be == true
-      end
-
-      describe ":device_target => contains the word 'simulator'" do
-        it 'Xcode >= 6.0' do
-          options = { :device_target => 'iPhone 5 (8.0 Simulator)' }
-          expect(RunLoop::Core.simulator_target?(options)).to be == true
-        end
-
-        it '5.1 <= Xcode <= 5.1.1' do
-          options = { :device_target => 'iPhone Retina (4-inch) - Simulator - iOS 7.1' }
-          expect(RunLoop::Core.simulator_target?(options)).to be == true
-        end
-      end
-
-      describe 'CoreSimulator' do
-        let(:xcode) { RunLoop::Xcode.new }
-
-        let(:options) { { :device_target => '0BF52B67-F8BB-4246-A668-1880237DD17B' } }
-
-        let(:device) { RunLoop::Device.new('HATS', '8.4', options[:device_target]) }
-
-        before do
-          allow_any_instance_of(RunLoop::Simctl).to receive(:simulators).and_return [device]
-        end
-
-        it ':device_target => CoreSimulator UDID' do
-          expect(RunLoop::Core.simulator_target?(options)).to be == true
-        end
-
-        it ':device_target => Named simulator' do
-          options[:device_target] = device.name
-          device.instance_variable_set(:@uuid, 'AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA')
-
-          expect(RunLoop::Core.simulator_target?(options)).to be == true
-        end
-
-        it ':device_target => Instruments identifier' do
-          options[:device_target] = device.instruments_identifier(xcode)
-          device.instance_variable_set(:@uuid, 'AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA')
-
-          expect(RunLoop::Core.simulator_target?(options)).to be == true
-        end
-      end
-
-      it 'returns false when target is a physical device' do
-        options = { :device_target => '49b59706a3ac25e997770a91577ef4e6ad0ab7bb' }
-        expect(RunLoop::Core.simulator_target?(options)).to be == false
       end
     end
   end
@@ -437,5 +262,84 @@ describe RunLoop::Core do
         expect(RunLoop::Core.detect_reset_options(options)).to be_falsey
       end
     end
+
+    describe ".expect_instrument_script" do
+      describe "script is a string" do
+        let(:script) { "path/to/a/javascript.js" }
+
+        it "is valid if string is a path to a file" do
+          expect(File).to receive(:exist?).with(script).and_return(true)
+
+          actual = RunLoop::Core.send(:expect_instruments_script, script)
+          expect(actual).to be == script
+        end
+
+        it "raises an error if file does not exist" do
+          expect(File).to receive(:exist?).with(script).and_return(false)
+
+          expect do
+            RunLoop::Core.send(:expect_instruments_script, script)
+          end.to raise_error RuntimeError, /Expected instruments JavaScript file at path:/
+        end
+      end
+
+      describe "script is symbol" do
+        let(:script) { :some_key }
+        let(:path) { "path/to/lib/script" }
+
+        it "is valid if it indicates a known script" do
+          expect(RunLoop::Core).to receive(:script_for_key).with(script).and_return(path)
+
+          actual = RunLoop::Core.send(:expect_instruments_script, script)
+          expect(actual).to be == path
+        end
+
+        it "raises an error if there is no known script for symbol" do
+          expect(RunLoop::Core).to receive(:script_for_key).with(script).and_return(nil)
+
+          expect do
+            RunLoop::Core.send(:expect_instruments_script, script)
+          end.to raise_error RuntimeError, /Expected :some_key to be one of:/
+        end
+      end
+
+      it "raises an error if script is not a symbol or string" do
+        script = [1, 2, 3]
+        expect do
+          RunLoop::Core.send(:expect_instruments_script, script)
+        end.to raise_error RuntimeError, /Expected '\[1, 2, 3\]' to be a Symbol or a String/
+      end
+    end
+
+    describe ".instruments_script_for_uia_strategy" do
+      it ":preferences" do
+        expect(RunLoop::Core).to receive(:script_for_key).with(:run_loop_fast_uia).and_call_original
+
+        actual = RunLoop::Core.send(:instruments_script_for_uia_strategy, :preferences)
+        expect(actual[/run_loop_fast_uia/, 0]).to be_truthy
+      end
+
+      it ":host" do
+        expect(RunLoop::Core).to receive(:script_for_key).with(:run_loop_host).and_call_original
+
+        actual = RunLoop::Core.send(:instruments_script_for_uia_strategy, :host)
+        expect(actual[/run_loop_host/, 0]).to be_truthy
+      end
+
+      it ":shared_element" do
+        expect(RunLoop::Core).to receive(:script_for_key).with(:run_loop_shared_element).and_call_original
+
+        actual = RunLoop::Core.send(:instruments_script_for_uia_strategy, :shared_element)
+        expect(actual[/run_loop_shared_element/, 0]).to be_truthy
+      end
+
+      it "no strategy" do
+        expect(RunLoop::Core).to receive(:script_for_key).with(:run_loop_basic).and_call_original
+
+        actual = RunLoop::Core.send(:instruments_script_for_uia_strategy, :unknown)
+        expect(actual[/run_loop_basic/, 0]).to be_truthy
+      end
+    end
   end
 end
+

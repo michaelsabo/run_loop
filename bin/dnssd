@@ -1,0 +1,69 @@
+#!/usr/bin/env ruby
+
+require "socket"
+require "ap"
+require "json"
+
+Thread.abort_on_exception = true
+
+trap 'INT' do exit end
+trap 'TERM' do exit end
+
+if defined?(Bundler)
+  raise "This tool cannot be called in the context of bundle exec"
+elsif RUBY_PLATFORM[/darwin/]
+  begin
+    require "dnssd"
+  rescue LoadError => _
+    raise %Q[
+
+This tool requires the dnssd gem which is not installed.  Install it:
+
+gem install dnssd --version 2.0
+
+and try again.
+]
+  end
+else
+  raise "This tool is not available on #{RUBY_PLATFORM}"
+end
+
+services = []
+addresses = []
+
+DNSSD.browse("_calabus._tcp") do |reply|
+  services << reply
+  next if reply.flags.more_coming?
+
+  added = services.select do |service|
+    service.flags.add?
+  end
+
+  added.each do |service|
+
+    resolved = service.resolve
+
+    addr = Socket.getaddrinfo(resolved.target, nil, Socket::AF_INET)
+
+    addr.each do |address|
+      match = addresses.find do |hash|
+        hash[:service] == service.name
+      end
+
+      if !match
+        addresses << {
+          :service => service.name,
+          :ip => addr[0][2],
+          :port => resolved.port,
+          :txt => resolved.text_record
+        }
+      end
+    end
+	end
+  json = JSON.generate(addresses)
+  puts json
+  exit
+end
+
+sleep
+

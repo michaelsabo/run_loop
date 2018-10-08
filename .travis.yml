@@ -1,25 +1,23 @@
+# Force Xcode environment
 language: objective-c
 
+osx_image: xcode10
+
 before_script:
-  - gem uninstall -Vax --force --no-abort-on-dependent run_loop
   - scripts/ci/travis/instruments-auth.sh
 
 script:
   - scripts/ci/travis/install-gem-ci.rb
   - scripts/ci/travis/rspec-ci.rb
-  - bundle exec rspec spec/integration/detect_simulators_spec.rb
-  - bundle exec rspec spec/integration/simctl_spec.rb
 
 rvm:
-  - 2.0.0
-  - 2.1.7
-  - 2.2.3
+  - 2.3.1
 
 notifications:
   email:
     recipients:
-      - joshuajmoody@gmail.com
-      - chris.fuentes@xamarin.com
+      - josmoo@microsoft.com
+      - v-tipoly@microsoft.com
     on_success: change
     on_failure: always
   slack:

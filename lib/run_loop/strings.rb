@@ -48,6 +48,21 @@ must exist and not be a directory.
       end
     end
 
+    # @!visibility private
+    #
+    # @return [RunLoop::Version] A version instance or nil if the file
+    #   at path does not contain server version information.
+    def server_id
+      regex = /LPSERVERID=[a-f0-9]{40}(-dirty)?/
+      match = dump[regex, 0]
+
+      if match
+        match.split("=")[1]
+      else
+        nil
+      end
+    end
+
     private
 
     # @!visibility private
@@ -55,7 +70,7 @@ must exist and not be a directory.
       args = ["strings", path]
       opts = { :log_cmd => true }
 
-      hash = xcrun.exec(args, opts)
+      hash = xcrun.run_command_in_context(args, opts)
 
       if hash[:exit_status] != 0
         raise RuntimeError,

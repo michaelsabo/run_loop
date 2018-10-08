@@ -3,36 +3,78 @@ describe RunLoop::Xcode do
   let(:xcode) { RunLoop::Xcode.new }
 
   describe '#ensure_valid_version_key' do
-    describe 'raises error when key format is not correct' do
-      it 'key is too short' do
-        expect do
-          xcode.send(:ensure_valid_version_key, :v7)
-        end.to raise_error RuntimeError
-      end
+    it "raises an error when key does not start with 'v'" do
+      expect do
+        xcode.send(:ensure_valid_version_key, :abc)
+      end.to raise_error("Expected version key to start with 'v'")
+    end
 
-      it 'key is too long' do
-        expect do
-          xcode.send(:ensure_valid_version_key, :v701)
-        end.to raise_error RuntimeError
-      end
+    it "raises an error if key is too short" do
+      expect do
+        xcode.send(:ensure_valid_version_key, :v9)
+      end.to raise_error(/to be exactly 3 chars long/)
 
-      it 'key does not start with v' do
-        expect do
-          xcode.send(:ensure_valid_version_key, :a70)
-        end.to raise_error RuntimeError
-      end
+      expect do
+        xcode.send(:ensure_valid_version_key, :v10)
+      end.to raise_error(/to be exactly 4 chars long/)
+    end
 
-      it 'key does have two integers' do
-        expect do
-          xcode.send(:ensure_valid_version_key, :v7a)
-        end.to raise_error RuntimeError
-      end
+    it "raises an error if key does not match correct pattern" do
+      expect do
+        xcode.send(:ensure_valid_version_key, :v9a)
+      end.to raise_error(/to match this pattern:/)
+
+      expect do
+        xcode.send(:ensure_valid_version_key, :v10a)
+      end.to raise_error(/to match this pattern:/)
     end
 
     it 'does not raise an error for valid keys' do
       expect do
         xcode.send(:ensure_valid_version_key, :v70)
       end.not_to raise_error
+
+      expect do
+        xcode.send(:ensure_valid_version_key, :v103)
+      end.not_to raise_error
+    end
+  end
+
+  context "#version" do
+    let(:xcodebuild_out) do
+      {
+        :out => %Q[
+Xcode 8.2.1
+Build version 8W132p
+],
+        :exit_status => 0,
+        :pid => 1
+      }
+    end
+
+    it "returns 0.0.0 when running on Test Cloud" do
+      expect(RunLoop::Environment).to receive(:xtc?).and_return(true)
+
+      expect(xcode.version).to be == RunLoop::Version.new("0.0.0")
+    end
+
+    it "returns 0.0.0 when xcrun xcodebuild has exit status non-zero" do
+      xcodebuild_out[:exit_status] = 1
+      expect(xcode).to receive(:run_shell_command).and_return(xcodebuild_out)
+
+      expect(xcode.version).to be == RunLoop::Version.new("0.0.0")
+    end
+
+    it "returns 0.0.0 when xcrun xcodebuild raises an error" do
+      expect(xcode).to receive(:run_shell_command).and_raise(RuntimeError)
+
+      expect(xcode.version).to be == RunLoop::Version.new("0.0.0")
+    end
+
+    it "returns Xcode version" do
+      expect(xcode).to receive(:run_shell_command).and_return(xcodebuild_out)
+
+      expect(xcode.version).to be == RunLoop::Version.new("8.2.1")
     end
   end
 
@@ -56,153 +98,142 @@ describe RunLoop::Xcode do
     expect(xcode.send(:fetch_version, key)).to be == version
   end
 
-  it '#v73' do expect(xcode.v73).to be == RunLoop::Version.new('7.3') end
-  it '#v72' do expect(xcode.v72).to be == RunLoop::Version.new('7.2') end
-  it '#v71' do expect(xcode.v71).to be == RunLoop::Version.new('7.1') end
-  it '#v70' do expect(xcode.v70).to be == RunLoop::Version.new('7.0') end
-  it '#v64' do expect(xcode.v64).to be == RunLoop::Version.new('6.4') end
-  it '#v63' do expect(xcode.v63).to be == RunLoop::Version.new('6.3') end
-  it '#v62' do expect(xcode.v62).to be == RunLoop::Version.new('6.2') end
-  it '#v61' do expect(xcode.v61).to be == RunLoop::Version.new('6.1') end
-  it '#v60' do expect(xcode.v60).to be == RunLoop::Version.new('6.0') end
-  it '#v51' do expect(xcode.v51).to be == RunLoop::Version.new('5.1') end
-  it '#v50' do expect(xcode.v50).to be == RunLoop::Version.new('5.0') end
+  it '#v10' do expect(xcode.v100).to be == RunLoop::Version.new('10.0') end
+  it '#v94' do expect(xcode.v94).to be == RunLoop::Version.new('9.4') end
+  it '#v93' do expect(xcode.v93).to be == RunLoop::Version.new('9.3') end
+  it '#v92' do expect(xcode.v92).to be == RunLoop::Version.new('9.2') end
+  it '#v91' do expect(xcode.v91).to be == RunLoop::Version.new('9.1') end
+  it '#v90' do expect(xcode.v90).to be == RunLoop::Version.new('9.0') end
+  it '#v83' do expect(xcode.v83).to be == RunLoop::Version.new('8.3') end
+  it '#v82' do expect(xcode.v82).to be == RunLoop::Version.new('8.2') end
+  it '#v81' do expect(xcode.v81).to be == RunLoop::Version.new('8.1') end
+  it '#v80' do expect(xcode.v80).to be == RunLoop::Version.new('8.0') end
 
-  describe "#version_gte_73?" do
+  describe "#version_gte_100?" do
     it "true" do
-      expect(xcode).to receive(:version).and_return(xcode.v73,
-                                                    RunLoop::Version.new("8.0"))
+      expect(xcode).to receive(:version).and_return(RunLoop::Version.new("10.0"))
 
-      expect(xcode.version_gte_73?).to be_truthy
-      expect(xcode.version_gte_73?).to be_truthy
+      expect(xcode.version_gte_100?).to be_truthy
     end
 
     it "false" do
-      expect(xcode).to receive(:version).and_return xcode.v71
+      expect(xcode).to receive(:version).and_return xcode.v94
 
-      expect(xcode.version_gte_73?).to be_falsey
+      expect(xcode.version_gte_100?).to be_falsey
     end
   end
 
-  describe '#version_gte_72?' do
-    it 'true' do
-      expect(xcode).to receive(:version).and_return(xcode.v72,
-                                                    RunLoop::Version.new('8.0'))
+  describe "#version_gte_94?" do
+    it "true" do
+      expect(xcode).to receive(:version).and_return(RunLoop::Version.new("9.4"))
 
-      expect(xcode.version_gte_72?).to be_truthy
-      expect(xcode.version_gte_72?).to be_truthy
+      expect(xcode.version_gte_94?).to be_truthy
     end
 
-    it 'false' do
-      expect(xcode).to receive(:version).and_return xcode.v71
+    it "false" do
+      expect(xcode).to receive(:version).and_return xcode.v93
 
-      expect(xcode.version_gte_72?).to be_falsey
+      expect(xcode.version_gte_94?).to be_falsey
     end
   end
 
-  describe '#version_gte_7?' do
-    it 'true' do
-      expect(xcode).to receive(:version).and_return(xcode.v70,
-                                                    RunLoop::Version.new('8.0'))
+  describe "#version_gte_93?" do
+    it "true" do
+      expect(xcode).to receive(:version).and_return(RunLoop::Version.new("9.3"))
 
-      expect(xcode.version_gte_7?).to be_truthy
-      expect(xcode.version_gte_7?).to be_truthy
+      expect(xcode.version_gte_93?).to be_truthy
     end
 
-    it 'false' do
-      expect(xcode).to receive(:version).and_return xcode.v64
+    it "false" do
+      expect(xcode).to receive(:version).and_return xcode.v92
 
-      expect(xcode.version_gte_7?).to be_falsey
+      expect(xcode.version_gte_93?).to be_falsey
     end
   end
 
-  describe '#version_gte_64?' do
-    it 'true' do
-      expect(xcode).to receive(:version).and_return(xcode.v64, xcode.v70)
+  describe "#version_gte_92?" do
+    it "true" do
+      expect(xcode).to receive(:version).and_return(RunLoop::Version.new("9.2"))
 
-      expect(xcode.version_gte_64?).to be_truthy
-      expect(xcode.version_gte_64?).to be_truthy
+      expect(xcode.version_gte_92?).to be_truthy
     end
 
-    it 'false' do
-      expect(xcode).to receive(:version).and_return xcode.v63
+    it "false" do
+      expect(xcode).to receive(:version).and_return xcode.v91
 
-      expect(xcode.version_gte_64?).to be_falsey
-    end
-  end
-
-  describe '#version_gte_63?' do
-    it 'true' do
-      expect(xcode).to receive(:version).and_return(xcode.v63, xcode.v64)
-
-      expect(xcode.version_gte_63?).to be_truthy
-      expect(xcode.version_gte_63?).to be_truthy
-    end
-
-    it 'false' do
-      expect(xcode).to receive(:version).and_return xcode.v62
-
-      expect(xcode.version_gte_63?).to be_falsey
+      expect(xcode.version_gte_92?).to be_falsey
     end
   end
 
-  describe '#version_gte_62?' do
-    it 'true' do
-      expect(xcode).to receive(:version).and_return(xcode.v62, xcode.v63)
+  describe "#version_gte_91?" do
+    it "true" do
+      expect(xcode).to receive(:version).and_return(RunLoop::Version.new("9.1"))
 
-      expect(xcode.version_gte_62?).to be_truthy
-      expect(xcode.version_gte_62?).to be_truthy
+      expect(xcode.version_gte_91?).to be_truthy
     end
 
-    it 'false' do
-      expect(xcode).to receive(:version).and_return xcode.v61
+    it "false" do
+      expect(xcode).to receive(:version).and_return xcode.v90
 
-      expect(xcode.version_gte_62?).to be_falsey
-    end
-  end
-
-  describe '#version_gte_61?' do
-    it 'true' do
-      expect(xcode).to receive(:version).and_return(xcode.v61, xcode.v62)
-
-      expect(xcode.version_gte_61?).to be_truthy
-      expect(xcode.version_gte_61?).to be_truthy
-    end
-
-    it 'false' do
-      expect(xcode).to receive(:version).and_return xcode.v60
-
-      expect(xcode.version_gte_61?).to be_falsey
+      expect(xcode.version_gte_91?).to be_falsey
     end
   end
 
-  describe '#version_gte_6?' do
-    it 'true' do
-      expect(xcode).to receive(:version).and_return(xcode.v60, xcode.v70)
+  describe "#version_gte_90?" do
+    it "true" do
+      expect(xcode).to receive(:version).and_return(RunLoop::Version.new("9.0"))
 
-      expect(xcode.version_gte_6?).to be_truthy
-      expect(xcode.version_gte_6?).to be_truthy
+      expect(xcode.version_gte_90?).to be_truthy
     end
 
-    it 'false' do
-      expect(xcode).to receive(:version).and_return xcode.v51
+    it "false" do
+      expect(xcode).to receive(:version).and_return xcode.v83
 
-      expect(xcode.version_gte_6?).to be_falsey
+      expect(xcode.version_gte_90?).to be_falsey
     end
   end
 
-  describe '#version_gte_51?' do
-    it 'true' do
-      expect(xcode).to receive(:version).and_return(xcode.v51, xcode.v60)
+  describe "#version_gte_83?" do
+    it "true" do
+      expect(xcode).to receive(:version).and_return(RunLoop::Version.new("8.3"))
 
-      expect(xcode.version_gte_51?).to be_truthy
-      expect(xcode.version_gte_51?).to be_truthy
+      expect(xcode.version_gte_83?).to be_truthy
     end
 
-    it 'false' do
-      expect(xcode).to receive(:version).and_return xcode.v50
+    it "false" do
+      expect(xcode).to receive(:version).and_return xcode.v82
 
-      expect(xcode.version_gte_51?).to be_falsey
+      expect(xcode.version_gte_83?).to be_falsey
+    end
+  end
+
+  describe "#version_gte_82?" do
+    it "true" do
+      expect(xcode).to receive(:version).and_return(RunLoop::Version.new("8.2"))
+
+      expect(xcode.version_gte_82?).to be_truthy
+    end
+
+    it "false" do
+      expect(xcode).to receive(:version).and_return xcode.v80
+
+      expect(xcode.version_gte_82?).to be_falsey
+    end
+  end
+
+  describe "#version_gte_81?" do
+    it "true" do
+      expect(xcode).to receive(:version).and_return(xcode.v81,
+                                                    RunLoop::Version.new("8.1"))
+
+      expect(xcode.version_gte_81?).to be_truthy
+      expect(xcode.version_gte_81?).to be_truthy
+    end
+
+    it "false" do
+      expect(xcode).to receive(:version).and_return xcode.v80
+
+      expect(xcode.version_gte_81?).to be_falsey
     end
   end
 

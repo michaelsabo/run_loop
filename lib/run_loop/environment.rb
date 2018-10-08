@@ -162,6 +162,92 @@ module RunLoop
       end
     end
 
+    # Returns the value of CODE_SIGN_IDENTITY
+    def self.code_sign_identity
+      value = ENV["CODE_SIGN_IDENTITY"]
+      if !value || value == ""
+        nil
+      else
+        value
+      end
+    end
+
+    # Returns the value of PROVISIONING_PROFILE
+    def self.provisioning_profile
+      value = ENV["PROVISIONING_PROFILE"]
+      if !value || value == ""
+        nil
+      else
+        value
+      end
+    end
+
+    # Returns the value of KEYCHAIN
+    #
+    # Use this to specify a non-default KEYCHAIN for code signing.
+    #
+    # The default KEYCHAIN is login.keychain.
+    def self.keychain
+      value = ENV["KEYCHAIN"]
+      if !value || value == ""
+        nil
+      else
+        value
+      end
+    end
+
+    # Returns the value of IOS_DEVICE_MANAGER
+    #
+    # Use this to specify a non-default ios_device_manager binary.
+    #
+    # The default ios_device_manager binary is bundled with this gem.
+    def self.ios_device_manager
+      value = ENV["IOS_DEVICE_MANAGER"]
+      if !value || value == ""
+        nil
+      else
+        value
+      end
+    end
+
+    # Returns the value of CBXDEVICE
+    #
+    # Use this to specify a non-default CBX-Runner for physical devices.
+    #
+    # The default CBX-Runner is bundled with this gem.
+    def self.cbxdevice
+      value = ENV["CBXDEVICE"]
+      if !value || value == ""
+        nil
+      else
+        value
+      end
+    end
+
+    # Returns the value of CBXSIM
+    #
+    # Use this to specify a non-default CBX-Runner for simulators.
+    #
+    # The default CBX-Runner is bundled with this gem.
+    def self.cbxsim
+      value = ENV["CBXSIM"]
+      if !value || value == ""
+        nil
+      else
+        value
+      end
+    end
+
+    # Returns the value of DEVICE_ENDPOINT
+    def self.device_agent_url
+      value = ENV["DEVICE_AGENT_URL"]
+      if value.nil? || value == ""
+        nil
+      else
+        value
+      end
+    end
+
     # Returns true if running in Jenkins CI
     #
     # Checks the value of JENKINS_HOME
@@ -240,9 +326,11 @@ module RunLoop
     end
 
     # !@visibility private
-    # Returns the value of CBXWS.  This can be used to override the default
-    # CBXDriver.xcworkspace.  You should only set this if you are actively
-    # developing the CBXDriver.
+    # Returns the value of CBXWS.  This can be used in conjunction with
+    # :cbx_launcher => :xcodebuild to launch the DeviceAgent rather than
+    # iOSDeviceManager.
+    #
+    # You should only set this if you are actively developing the DeviceAgent.
     def self.cbxws
       value = ENV["CBXWS"]
       if value.nil? || value == ""
@@ -250,12 +338,14 @@ module RunLoop
       else
         path = File.expand_path(value)
         if !File.directory?(path)
-          raise RuntimeError, %Q[CBXWS is set, but there is no workspace at
+          raise RuntimeError, %Q[
+CBXWS is set, but there is no workspace at
+
 #{path}
 
-Only set CBXWS if you are developing new features in the CBXRunner.
+Only set CBXWS if you are developing new features in the DeviceAgent.
 
-Check your environment.]
+]
         end
         path
       end

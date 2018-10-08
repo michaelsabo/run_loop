@@ -2,6 +2,7 @@
 describe RunLoop::Language do
 
   let(:device) { RunLoop::Device.new("name", "7.0", "udid") }
+  let(:v110) { RunLoop::Version.new("11.0") }
   let(:v100) { RunLoop::Version.new("10.0") }
   let(:v90) { RunLoop::Version.new("9.0") }
   let(:v91) { RunLoop::Version.new("9.1") }
@@ -50,6 +51,20 @@ describe RunLoop::Language do
       expect(langs90.count).to be == langs91.count
     end
 
+    it "supports iOS 11" do
+      expect(device).to receive(:version).and_return(v110)
+
+      langs = RunLoop::Language.codes_for_device(device)
+      expect(langs.count).to be == 782
+    end
+
+    it "supports iOS 10" do
+      expect(device).to receive(:version).and_return(v100)
+
+      langs = RunLoop::Language.codes_for_device(device)
+      expect(langs.count).to be == 732
+    end
+
     it "supports iOS 9" do
       expect(device).to receive(:version).and_return(v90)
 
@@ -66,10 +81,6 @@ describe RunLoop::Language do
 
     it "returns nil for any other iOS version" do
       allow(device).to receive(:version).and_return(v70)
-
-      expect(RunLoop::Language.codes_for_device(device)).to be_falsey
-
-      allow(device).to receive(:version).and_return(v100)
 
       expect(RunLoop::Language.codes_for_device(device)).to be_falsey
     end

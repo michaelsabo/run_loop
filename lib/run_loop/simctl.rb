@@ -15,9 +15,18 @@ module RunLoop
     # @!visibility private
     SIMCTL_PLIST_DIR = lambda {
       dirname  = File.dirname(__FILE__)
-      joined = File.join(dirname, '..', '..', 'plists', 'simctl')
+      joined = File.join(dirname, "..", "..", "plists", "simctl")
       File.expand_path(joined)
     }.call
+
+    # @!visibility private
+    SIM_STATES = {
+      "Creating" => 0,
+      "Shutdown" => 1,
+      "Shutting Down" => 2,
+      "Booted" => 3,
+      "Plist Missing Key" => -1
+    }.freeze
 
     # @!visibility private
     def self.uia_automation_plist
@@ -30,6 +39,35 @@ module RunLoop
     end
 
     # @!visibility private
+    def self.ensure_valid_core_simulator_service
+      max_tries = 4
+      valid = false
+      4.times do |try|
+        valid = self.valid_core_simulator_service?
+        break if valid
+        RunLoop.log_debug("Invalid CoreSimulator service for active Xcode: try #{try + 1} of #{max_tries}")
+      end
+      valid
+    end
+
+    # @!visibility private
+    def self.valid_core_simulator_service?
+      require "run_loop/shell"
+      args = ["xcrun", "simctl", "help"]
+
+      options = {timeout: 5 }
+      begin
+        hash = Shell.run_shell_command(args, options)
+        return false if hash[:exit_status] != 0
+        return false if hash[:out][/Failed to locate a valid instance of CoreSimulatorService/]
+        return false if hash[:out][/CoreSimulatorService connection became invalid/]
+        true
+      rescue RunLoop::Shell::TimeoutError, RunLoop::Shell::Error => _
+        false
+      end
+    end
+
+    # @!visibility private
     attr_reader :device
 
     # @!visibility private
@@ -37,6 +75,7 @@ module RunLoop
       @ios_devices = []
       @tvos_devices = []
       @watchos_devices = []
+      Simctl.ensure_valid_core_simulator_service
     end
 
     # @!visibility private
@@ -74,9 +113,8 @@ module RunLoop
     # @param [RunLoop::Device] device The device under test.
     # @return [String] The path to the .app bundle if it exists; nil otherwise.
     def app_container(device, bundle_id)
-      return nil if !xcode.version_gte_7?
       cmd = ["simctl", "get_app_container", device.udid, bundle_id]
-      hash = execute(cmd, DEFAULTS)
+      hash = shell_out_with_xcrun(cmd, DEFAULTS)
 
       exit_status = hash[:exit_status]
       if exit_status != 0
@@ -87,35 +125,370 @@ module RunLoop
     end
 
     # @!visibility private
-    #
-    # SimControl compatibility
-    def ensure_accessibility(device)
-      sim_control.ensure_accessibility(device)
+    def simulator_state_as_int(device)
+      plist = device.simulator_device_plist
+
+      if pbuddy.plist_key_exists?("state", plist)
+        pbuddy.plist_read("state", plist).to_i
+      else
+        SIM_STATES["Plist Missing Key"]
+      end
+    end
+
+    # @!visibility private
+    def simulator_state_as_string(device)
+      string_for_sim_state(simulator_state_as_int(device))
+    end
+
+    # @!visibility private
+    def shutdown(device)
+      if simulator_state_as_int(device) == SIM_STATES["Shutdown"]
+        RunLoop.log_debug("Simulator is already shutdown")
+        true
+      else
+        cmd = ["simctl", "shutdown", device.udid]
+        hash = shell_out_with_xcrun(cmd, DEFAULTS)
+
+        exit_status = hash[:exit_status]
+        if exit_status != 0
+          if simulator_state_as_int(device) == SIM_STATES["Shutdown"] ||
+            hash[:out][/Unable to shutdown device in current state: Shutdown/]
+            RunLoop.log_debug("simctl shutdown called when state is 'Shutdown'; ignoring error")
+          else
+            raise RuntimeError,
+                  %Q[Could not shutdown the simulator:
+
+  command: xcrun #{cmd.join(" ")}
+simulator: #{device}
+
+                  #{hash[:out]}
+
+This usually means your CoreSimulator processes need to be restarted.
+
+You can restart the CoreSimulator processes with this command:
+
+$ bundle exec run-loop simctl manage-processes
+
+]
+          end
+        end
+        true
+      end
     end
 
     # @!visibility private
     #
-    # SimControl compatibility
-    def ensure_software_keyboard(device)
-      sim_control.ensure_software_keyboard(device)
+    # Waiting for anything but 'Shutdown' is not advised.  The simulator reports
+    # that it is "Booted" long before it is ready to receive commands.
+    #
+    # Waiting for 'Shutdown' is required for erasing the simulator and launching
+    # launching the simulator with iOSDeviceManager.
+    def wait_for_shutdown(device, timeout, delay)
+      now = Time.now
+      poll_until = now + timeout
+      in_state = false
+
+      state = nil
+
+      while Time.now < poll_until
+        state = simulator_state_as_int(device)
+        in_state = state == SIM_STATES["Shutdown"]
+        break if in_state
+        sleep delay if delay != 0
+      end
+
+      elapsed = Time.now - now
+      RunLoop.log_debug("Waited for #{elapsed} seconds for device to have state: 'Shutdown'.")
+
+      unless in_state
+        string = string_for_sim_state(state)
+        raise "Expected 'Shutdown' state but found '#{string}' after waiting for #{elapsed} seconds."
+      end
+      in_state
+    end
+
+    def boot(device)
+      if simulator_state_as_int(device) == SIM_STATES["Booted"]
+        RunLoop.log_debug("Simulator is already Booted")
+        true
+      else
+        cmd = ["simctl", "boot", device.udid]
+        hash = shell_out_with_xcrun(cmd, DEFAULTS)
+
+        exit_status = hash[:exit_status]
+        if exit_status != 0
+          if simulator_state_as_int(device) == SIM_STATES["Booted"]
+            RunLoop.log_debug("simctl boot called when state is 'Booted'; ignoring error")
+          else
+            raise RuntimeError,
+%Q[Could not boot the simulator:
+
+  command: xcrun #{cmd.join(" ")}
+simulator: #{device}
+    state: #{device.state}
+
+#{hash[:out]}
+
+This usually means your CoreSimulator processes need to be restarted.
+
+You can restart the CoreSimulator processes with this command:
+
+$ bundle exec run-loop simctl manage-processes
+
+]
+          end
+        end
+        true
+      end
+    end
+
+    # @!visibility private
+    def reboot(device)
+      shutdown(device)
+      wait_for_shutdown(device, DEFAULTS[:timeout], 1.0)
+      boot(device)
+      device.simulator_wait_for_stable_state
+    end
+
+    # @!visibility private
+    # Erases the simulator.
+    #
+    # @param [RunLoop::Device] device The simulator to erase.
+    # @param [Numeric] wait_timeout How long to wait for the simulator to have
+    #  state "Shutdown"; passed to #wait_for_shutdown.
+    # @param [Numeric] wait_delay How long to wait between calls to
+    #  #simulator_state_as_int while waiting for the simulator have to state "Shutdown";
+    #  passed to #wait_for_shutdown
+    def erase(device, wait_timeout, wait_delay)
+      require "run_loop/core_simulator"
+      CoreSimulator.quit_simulator
+
+      shutdown(device)
+      wait_for_shutdown(device, wait_timeout, wait_delay)
+
+      # TODO: when we encounter a "data couldn't be removed because you don't
+      # have permission to access it" error" it is possible we can ignore the
+      # error.
+
+      cmd = ["simctl", "erase", device.udid]
+      hash = shell_out_with_xcrun(cmd, DEFAULTS)
+
+      exit_status = hash[:exit_status]
+      if exit_status != 0
+        raise RuntimeError,
+%Q[Could not erase the simulator:
+
+  command: xcrun #{cmd.join(" ")}
+simulator: #{device}
+
+#{hash[:out]}
+
+This usually means your CoreSimulator processes need to be restarted.
+
+You can restart the CoreSimulator processes with this command:
+
+$ bundle exec run-loop simctl manage-processes
+
+]
+      end
+      true
     end
 
     # @!visibility private
     #
-    # TODO Make this private again; exposed for SimControl compatibility.
-    def xcode
-      @xcode ||= RunLoop::Xcode.new
+    # Launches the app on on the device.
+    #
+    # Caller is responsible for the following:
+    #
+    # 1. Launching the simulator.
+    # 2. Installing the application.
+    #
+    # No checks are made.
+    #
+    # @param [RunLoop::Device] device The simulator to launch on.
+    # @param [RunLoop::App] app The app to launch.
+    # @param [Numeric] timeout How long to wait for simctl to complete.
+    def launch(device, app, timeout)
+      cmd = ["simctl", "launch", device.udid, app.bundle_identifier]
+      options = DEFAULTS.dup
+      options[:timeout] = timeout
+
+      hash = shell_out_with_xcrun(cmd, options)
+
+      exit_status = hash[:exit_status]
+      if exit_status != 0
+        raise RuntimeError,
+%Q[Could not launch app on simulator:
+
+  command: xcrun #{cmd.join(" ")}
+simulator: #{device}
+      app: #{app}
+
+#{hash[:out]}
+
+This usually means your CoreSimulator processes need to be restarted.
+
+You can restart the CoreSimulator processes with this command:
+
+$ bundle exec run-loop simctl manage-processes
+
+]
+      end
+      true
+    end
+
+    # @!visibility private
+    #
+    # Removes the application from the device.
+    #
+    # Caller is responsible for the following:
+    #
+    # 1. Launching the simulator.
+    # 2. Verifying that the application is installed; simctl uninstall will fail if app
+    #    is installed.
+    #
+    # No checks are made.
+    #
+    # @param [RunLoop::Device] device The simulator to launch on.
+    # @param [RunLoop::App] app The app to launch.
+    # @param [Numeric] timeout How long to wait for simctl to complete.
+    def uninstall(device, app, timeout)
+      cmd = ["simctl", "uninstall", device.udid, app.bundle_identifier]
+      options = DEFAULTS.dup
+      options[:timeout] = timeout
+
+      hash = shell_out_with_xcrun(cmd, options)
+
+      exit_status = hash[:exit_status]
+      if exit_status != 0
+        raise RuntimeError,
+%Q[Could not uninstall app from simulator:
+
+  command: xcrun #{cmd.join(" ")}
+simulator: #{device}
+      app: #{app}
+
+#{hash[:out]}
+
+This usually means your CoreSimulator processes need to be restarted.
+
+You can restart the CoreSimulator processes with this command:
+
+$ bundle exec run-loop simctl manage-processes
+
+]
+      end
+
+      app_container = app_container(device, app.bundle_identifier)
+      if app_container
+        RunLoop.log_debug("After uninstall, simctl thinks app container exists")
+        if File.exist?(app_container)
+          RunLoop.log_debug("App container _does_ exist on disk; deleting it")
+          FileUtils.rm_rf(app_container)
+        else
+          RunLoop.log_debug("App container does _not_ exist on disk")
+        end
+        RunLoop.log_debug("Rebooting the device")
+        reboot(device)
+        if app_container(device, app.bundle_identifier)
+          raise "simctl uninstall succeeded, but simctl says app is still installed"
+        end
+      end
+
+      true
+    end
+
+    # @!visibility private
+    #
+    # Launches the app on on the device.
+    #
+    # Caller is responsible for the following:
+    #
+    # 1. Launching the simulator.
+    #
+    # No checks are made.
+    #
+    # @param [RunLoop::Device] device The simulator to launch on.
+    # @param [RunLoop::App] app The app to launch.
+    # @param [Numeric] timeout How long to wait for simctl to complete.
+    def install(device, app, timeout)
+      cmd = ["simctl", "install", device.udid, app.path]
+      options = DEFAULTS.dup
+      options[:timeout] = timeout
+
+      success = false
+      tries = 5
+      hash = nil
+      tries.times do |try|
+        hash = shell_out_with_xcrun(cmd, options)
+        exit_status = hash[:exit_status]
+        if exit_status == 0
+          RunLoop.log_debug("Successful install on #{try + 1} of #{tries} attempts")
+          success = true
+          break
+        else
+          out = hash[:out]
+          if out[/This app could not be installed at this time/]
+            RunLoop.log_debug("Install failed on attempt #{try + 1} of #{tries}")
+            sleep(1.0)
+          else
+            # Any other error, fail.
+            success = false
+            break
+          end
+        end
+      end
+
+      return true if success
+
+      raise RuntimeError,
+%Q[Could not install app on simulator:
+
+  command: xcrun #{cmd.join(" ")}
+simulator: #{device}
+      app: #{app}
+
+#{hash[:out]}
+
+This usually means your CoreSimulator processes need to be restarted.
+
+You can restart the CoreSimulator processes with this command:
+
+$ bundle exec run-loop simctl manage-processes
+
+]
     end
 
     private
 
     # @!visibility private
-    attr_reader :ios_devices, :tvos_devices, :watchos_devices
+    attr_reader :ios_devices, :tvos_devices, :watchos_devices, :pbuddy
 
     # @!visibility private
-    def execute(array, options)
+    def xcode
+      @xcode ||= RunLoop::Xcode.new
+    end
+
+    # @!visibility private
+    def pbuddy
+      @pbuddy ||= RunLoop::PlistBuddy.new
+    end
+
+    # @!visibility private
+    def string_for_sim_state(integer)
+      SIM_STATES.each do |key, value|
+        if value == integer
+          return key
+        end
+      end
+
+      raise ArgumentError, "Could not find state for #{integer}"
+    end
+
+    # @!visibility private
+    def shell_out_with_xcrun(array, options)
       merged = DEFAULTS.merge(options)
-      xcrun.exec(array, merged)
+      xcrun.run_command_in_context(array, merged)
     end
 
     # @!visibility private
@@ -130,20 +503,12 @@ module RunLoop
     # `@watchos_devices`.  Callers should check for existing devices to avoid
     # the overhead of calling `simctl list devices --json`.
     def fetch_devices!
-      if !xcode.version_gte_7?
-        return {
-          :ios => sim_control.simulators,
-          :tvos => [],
-          :watchos => []
-        }
-      end
-
       @ios_devices = []
       @tvos_devices = []
       @watchos_devices = []
 
       cmd = ["simctl", "list", "devices", "--json"]
-      hash = execute(cmd, DEFAULTS)
+      hash = shell_out_with_xcrun(cmd, DEFAULTS)
 
       out = hash[:out]
       exit_status = hash[:exit_status]
@@ -263,13 +628,6 @@ is not an iOS, tvOS, or watchOS device"
     # @!visibility private
     def xcrun
       @xcrun ||= RunLoop::Xcrun.new
-    end
-
-    # @!visibility private
-    # Support for Xcode < 7 when trying to collect simulators.  Xcode 7 allows
-    # a --json option which is much easier to parse.
-    def sim_control
-      @sim_control ||= RunLoop::SimControl.new
     end
   end
 end

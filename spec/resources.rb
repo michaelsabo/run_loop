@@ -1,6 +1,7 @@
-require 'singleton'
 
 class Resources
+
+  require 'singleton'
 
   include RunLoop::Regex
   include Singleton
@@ -35,16 +36,8 @@ class Resources
     @xcode ||= RunLoop::Xcode.new
   end
 
-  def core_simulator_env?
-    xcode.version_gte_6?
-  end
-
   def instruments
     @instruments ||= RunLoop::Instruments.new
-  end
-
-  def sim_control
-    @sim_control ||= RunLoop::SimControl.new
   end
 
   def simctl
@@ -77,6 +70,12 @@ class Resources
     end.call
   end
 
+  def simulator_preferences_plist
+    @simulator_preferences_plist ||= File.join(resources_dir,
+                                               "CoreSimulator",
+                                               "com.apple.iphonesimulator.plist")
+  end
+
   def infinite_run_loop_script
     @infinite_run_loop_script = File.expand_path(File.join(resources_dir, 'infinite_run_loop.js'))
   end
@@ -87,6 +86,10 @@ class Resources
 
   def app_bundle_path
     @app_bundle_path ||= File.expand_path(File.join(resources_dir, 'CalSmoke.app'))
+  end
+
+  def unsigned_app_bundle_path
+    @unsigned_app_bundle_path ||= File.expand_path(File.join(resources_dir, 'unsigned.app'))
   end
 
   def ipa_path
@@ -121,12 +124,12 @@ class Resources
     @bundle_id ||= 'com.xamarin.CalSmoke-cal'
   end
 
-  def simulator
-    RunLoop::Device.new("iPhone 4s", "8.3", "CE5BA25E-9434-475A-8947-ECC3918E64E3")
+  def simulator(version="8.3")
+    RunLoop::Device.new("iPhone 4s", version, "CE5BA25E-9434-475A-8947-ECC3918E64E3")
   end
 
-  def device
-    RunLoop::Device.new("denis", "8.3", "893688959205dc7eb48d603c558ede919ad8dd0c")
+  def device(version="8.3")
+    RunLoop::Device.new("denis", version, "893688959205dc7eb48d603c558ede919ad8dd0c")
   end
 
   def default_simulator
@@ -144,62 +147,6 @@ class Resources
     FileUtils.cp(source, target)
 
     target
-  end
-
-  def self.shutdown_all_booted(options = {})
-    xcrun = RunLoop::Xcrun.new
-    return true if self.shutdown_with_simctl(xcrun) == :none
-
-    defaults = {
-          :timeout => 10,
-          :delay => 1
-    }
-
-    merged = defaults.merge(options)
-
-    timeout = merged[:timeout]
-    delay = merged[:delay]
-
-    now = Time.now
-    poll_until = now + timeout
-    counter = 1
-
-    done = false
-    while Time.now < poll_until
-      done = self.shutdown_with_simctl(xcrun) == :none
-      counter += 1
-      break if done
-      sleep delay
-    end
-
-    elapsed = Time.now - now
-    if done
-      RunLoop.log_debug("Shutdown #{counter} booted simulators in '#{elapsed}'")
-    else
-      RunLoop.log_debug("Timed out shutting down booted simulators; shutdown #{counter} in #{elapsed} seconds")
-    end
-
-    done
-  end
-
-  def self.shutdown_with_simctl(xcrun)
-    args = ['simctl', 'shutdown', 'booted']
-    hash = xcrun.exec(args, {:log_cmd => true })
-    out = hash[:out]
-    exit_status = hash[:exit_status]
-
-    if [# Typical output for Xcode >= 6
-          out == 'No devices are booted.',
-
-          # Xcode 6
-          exit_status == 145,
-
-          # Xcode 7
-          exit_status == 158].any?
-      :none
-    else
-      :shutdown
-    end
   end
 
   def launch_with_options(options, tries=self.launch_retries, &block)
@@ -245,20 +192,24 @@ class Resources
     case sdk
       when :sdk8
         @mock_core_simulator_data_dir_sdk8 ||= lambda {
-          File.expand_path(File.join(resources_dir, 'simctl', 'sdk8', 'data'))
+          File.expand_path(File.join(resources_dir, "simctl", 'sdk8', 'data'))
         }.call
       when :sdk7
         @mock_core_simulator_data_dir_sdk7 ||= lambda {
-          File.expand_path(File.join(resources_dir, 'simctl', 'sdk-less-than-8', 'data'))
+          File.expand_path(File.join(resources_dir, "simctl", 'sdk-less-than-8', 'data'))
         }.call
       else
         raise "Expected sdk '#{sdk}' to be on of #{[:sdk8, :sdk7]}"
     end
   end
 
-  def random_simulator_device
+  def random_simulator_device(min_version=nil)
     simctl.simulators.shuffle.detect do |device|
-      device.name[/Resizable/,0] == nil
+      [
+        !device.name[/Resizable/],
+        !device.name[/rspec/],
+        min_version ? device.version >= min_version : true
+      ].all?
     end
   end
 
@@ -267,15 +218,31 @@ class Resources
     begin
       ENV.delete('DEVELOPER_DIR')
       ENV['DEVELOPER_DIR'] = developer_dir
+      RunLoop::Simctl.ensure_valid_core_simulator_service
       block.call
     ensure
       ENV['DEVELOPER_DIR'] = original_developer_dir
     end
   end
 
+  def xcode_install_paths
+    @xcode_install_paths ||= begin
+      min_xcode_version = RunLoop::Version.new("9.4.1")
+      Dir.glob('/Xcode/*/*.app/Contents/Developer').map do |path|
+        xcode_version = path[VERSION_REGEX, 0]
+
+        if RunLoop::Version.new(xcode_version) >= min_xcode_version
+          path
+        else
+          nil
+        end
+      end
+    end.compact
+  end
+
   def alt_xcode_install_paths
     @alt_xcode_install_paths ||= lambda {
-      min_xcode_version = RunLoop::Version.new('6.3.2')
+      min_xcode_version = RunLoop::Version.new("9.4.1")
       Dir.glob('/Xcode/*/*.app/Contents/Developer').map do |path|
         xcode_version = path[VERSION_REGEX, 0]
 
@@ -317,12 +284,13 @@ class Resources
   end
 
   def plist_template
-     @plist_template ||= File.expand_path(File.join(resources_dir, 'plist-buddy/com.example.plist'))
+     @plist_template ||= File.join(resources_dir, "plist-buddy",
+                                   "com.example.plist")
   end
 
   def plist_for_testing
-    dir = Dir.mktmpdir
-    path = File.join(dir, 'com.testing.plist')
+    path = File.join(local_tmp_dir, 'com.testing.plist')
+    FileUtils.rm_f(path) if File.exist?(path)
     FileUtils.cp(plist_template, path)
     path
   end
@@ -364,6 +332,17 @@ class Resources
     end
   end
 
+  def device_agent_tree_hashes(name)
+    case name
+      when :preferences
+        path = File.join(resources_dir, "device-agent-tree", "preferences.json")
+      else
+        raise ArgumentError, "Unexpected tree hash name: '#{name}'"
+    end
+
+    JSON.parse(File.read(path))
+  end
+
   def simulator_with_sdk_test(sdk_test, simctl)
     simctl.simulators.shuffle.detect do |device|
       [
@@ -382,6 +361,11 @@ class Resources
     else
       File.join(base_dir, 'software-keyboard-not-enabled.plist')
     end
+  end
+
+  def empty_plist
+    base_dir = File.join(resources_dir, 'keyboard', 'CoreSimulator')
+    File.join(base_dir, 'empty.plist')
   end
 
   def ideviceinstaller_bin_path
@@ -500,16 +484,6 @@ class Resources
     @fake_instruments_pids = []
   end
 
-  def incompatible_xcode_ios_version(device_version, xcode_version)
-    [(device_version >= RunLoop::Version.new('8.0') and xcode_version < RunLoop::Version.new('6.0')),
-     (device_version >= RunLoop::Version.new('8.1') and xcode_version < RunLoop::Version.new('6.1')),
-     (device_version >= RunLoop::Version.new('8.2') and xcode_version < RunLoop::Version.new('6.2')),
-     (device_version >= RunLoop::Version.new('8.3') and xcode_version < RunLoop::Version.new('6.3')),
-     (device_version >= RunLoop::Version.new('8.4') and xcode_version < RunLoop::Version.new('6.4')),
-     (device_version >= RunLoop::Version.new('9.0') and xcode_version < RunLoop::Version.new('7.0')),
-     (device_version >= RunLoop::Version.new('9.1') and xcode_version < RunLoop::Version.new('7.1'))].any?
-  end
-
   def idevice_id_bin_path
     @idevice_id_bin_path ||= `which idevice_id`.chomp!
   end
@@ -519,11 +493,19 @@ class Resources
     path and File.exist? path
   end
 
+  def device_ids_from_idevice_id
+    args = [idevice_id_bin_path, "-l"]
+    hash = RunLoop::Shell.run_shell_command(args, {log_cmd: true})
+    hash[:out].strip.split($-0)
+  end
+
   def physical_devices_for_testing(instruments = nil)
 
     if instruments.nil?
       instruments = self.instruments
     end
+
+    xcode_version = instruments.xcode.version
 
     # Xcode 6 + iOS 8 - devices on the same network, whether development or not,
     # appear when calling $ xcrun instruments -s devices. For the purposes of
@@ -533,9 +515,9 @@ class Resources
     if idevice_id_available?
       white_list = `#{idevice_id_bin_path} -l`.strip.split("\n")
       devices.select do | device |
-        white_list.include?(device.udid) &&
-              white_list.count(device.udid) == 1 &&
-              !incompatible_xcode_ios_version(device.version, instruments.xcode.version)
+        [white_list.include?(device.udid),
+         white_list.count(device.udid) == 1,
+         device.compatible_with_xcode_version?(instruments.xcode.version)].all?
       end
     else
       devices

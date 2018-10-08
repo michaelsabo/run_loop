@@ -27,10 +27,6 @@ module RunLoop
     READ_SCRIPT_PATH = File.join(SCRIPTS_PATH, 'read-cmd.sh')
     TIMEOUT_SCRIPT_PATH = File.join(SCRIPTS_PATH, 'timeout3')
 
-    def self.scripts_path
-      SCRIPTS_PATH
-    end
-
     def self.log_run_loop_options(options, xcode)
       return unless RunLoop::Environment.debug?
       # Ignore :sim_control b/c it is a ruby object; printing is not useful.
@@ -57,6 +53,8 @@ module RunLoop
       SCRIPTS[key]
     end
 
+    # @!visibility private
+    # This is the entry point for UIAutomation.
     def self.run_with_options(options)
       before = Time.now
 
@@ -67,10 +65,38 @@ module RunLoop
       xcode = options[:xcode] || RunLoop::Xcode.new
       instruments = options[:instruments] || RunLoop::Instruments.new
 
-      # Find the Device under test, the App under test, UIA strategy, and reset options
+      # Guard against Xcode version check on the XTC.
+      if !RunLoop::Environment.xtc? && xcode.version_gte_8?
+        raise %Q[
+UIAutomation is not available on Xcode >= 8.*.
+
+We are in the process of updating Calabash to use our new tool: DeviceAgent.
+
+We will track progress in this forum post:
+
+https://groups.google.com/forum/#!topic/calabash-ios/g34znf0LnE4
+
+For now, testing with Xcode 8 is not supported.
+
+Thank you for your patience.
+]
+      end
+
+      # Device under test: DUT
       device = RunLoop::Device.detect_device(options, xcode, simctl, instruments)
+
+      # App under test: AUT
       app_details = RunLoop::DetectAUT.detect_app_under_test(options)
-      uia_strategy = self.detect_uia_strategy(options, device, xcode)
+
+      # Find the script to pass to instruments and the strategy to communicate
+      # with UIAutomation.
+      script_n_strategy = self.detect_instruments_script_and_strategy(options,
+                                                                      device,
+                                                                      xcode)
+      instruments_script = script_n_strategy[:script]
+      uia_strategy = script_n_strategy[:strategy]
+
+      # The app life cycle reset options.
       reset_options = self.detect_reset_options(options)
 
       instruments.kill_instruments(xcode)
@@ -82,14 +108,14 @@ module RunLoop
       FileUtils.mkdir_p(results_dir_trace)
 
       dependencies = options[:dependencies] || []
-      dependencies << File.join(scripts_path, 'calabash_script_uia.js')
+      dependencies << File.join(SCRIPTS_PATH, 'calabash_script_uia.js')
       dependencies.each do |dep|
         FileUtils.cp(dep, results_dir)
       end
 
       script = File.join(results_dir, '_run_loop.js')
 
-      javascript = UIAScriptTemplate.new(SCRIPTS_PATH, options[:script]).result
+      javascript = UIAScriptTemplate.new(SCRIPTS_PATH, instruments_script).result
       UIAScriptTemplate.sub_path_var!(javascript, results_dir)
       UIAScriptTemplate.sub_read_script_path_var!(javascript, READ_SCRIPT_PATH)
       UIAScriptTemplate.sub_timeout_script_path_var!(javascript, TIMEOUT_SCRIPT_PATH)
@@ -113,7 +139,7 @@ module RunLoop
         FileUtils.touch repl_path
       end
 
-      RunLoop::HostCache.default.clear unless RunLoop::Environment.xtc?
+      RunLoop::Cache.default.clear unless RunLoop::Environment.xtc?
 
       cal_script = File.join(SCRIPTS_PATH, 'calabash_script_uia.js')
       File.open(script, 'w') do |file|
@@ -137,11 +163,41 @@ module RunLoop
           :results_dir => results_dir,
           :script => script,
           :log_file => log_file,
-          :args => args
+          :args => args,
+          :uia_strategy => uia_strategy,
+          :base_script => instruments_script
         }
       merged_options = options.merge(discovered_options)
 
       if device.simulator?
+        if !app_details[:app]
+          raise %Q[
+
+Invalid APP, APP_BUNDLE_PATH, or BUNDLE_ID detected.
+
+The following information was detected from the environment:
+
+             APP='#{ENV["APP"]}'
+ APP_BUNDLE_PATH='#{ENV["APP_BUNDLE_PATH"]}'
+       BUNDLE_ID='#{ENV["BUNDLE_ID"]}'
+
+
+It looks like you are trying to launch an app on a simulator using a bundle
+identifier or you have incorrectly set the APP variable to an app bundle that
+does not exist.
+
+If you are trying to launch a test against a physical device, set the DEVICE_TARGET
+variable to the UDID of your device an APP to a bundle identifier or a path to
+an .ipa.
+
+# com.example.MyApp must be installed on the target device
+$ APP=com.example.MyApp DEVICE_TARGET="John's iPhone" cucumber
+
+If you are trying to launch against a simulator and you encounter this error, it
+means that the APP variable is pointing to a .app that does not exist.
+
+]
+        end
         self.prepare_simulator(app_details[:app], device, xcode, simctl, reset_options)
       end
 
@@ -165,7 +221,8 @@ module RunLoop
         :app => app_details[:bundle_id],
         :repl_path => repl_path,
         :log_file => log_file,
-        :results_dir => results_dir
+        :results_dir => results_dir,
+        :automator => :instruments
       }
 
       uia_timeout = options[:uia_timeout] || RunLoop::Environment.uia_timeout || 10
@@ -222,7 +279,7 @@ Logfile: #{log_file}
 
       RunLoop::Logging.log_debug(logger, "Launching took #{Time.now-before_instruments_launch} seconds")
 
-      dylib_path = self.dylib_path_from_options(merged_options)
+      dylib_path = RunLoop::DylibInjector.dylib_path_from_options(merged_options)
 
       if dylib_path
         if device.physical_device?
@@ -256,56 +313,26 @@ Logfile: #{log_file}
       true
     end
 
-    # Extracts the value of :inject_dylib from options Hash.
-    # @param options [Hash] arguments passed to {RunLoop.run}
-    # @return [String, nil] If the options contains :inject_dylibs and it is a
-    #  path to a dylib that exists, return the path.  Otherwise return nil or
-    #  raise an error.
-    # @raise [RuntimeError] If :inject_dylib points to a path that does not exist.
-    # @raise [ArgumentError] If :inject_dylib is not a String.
-    def self.dylib_path_from_options(options)
-      inject_dylib = options.fetch(:inject_dylib, nil)
-      return nil if inject_dylib.nil?
-      unless inject_dylib.is_a? String
-        raise ArgumentError, "Expected :inject_dylib to be a path to a dylib, but found '#{inject_dylib}'"
-      end
-      dylib_path = File.expand_path(inject_dylib)
-      unless File.exist?(dylib_path)
-        raise "Cannot load dylib.  The file '#{dylib_path}' does not exist."
-      end
-      dylib_path
-    end
-
     # Returns the a default simulator to target.  This default needs to be one
     # that installed by default in the current Xcode version.
-    #
-    # For historical reasons, the most recent non-64b SDK should be used.
     #
     # @param [RunLoop::Xcode] xcode Used to detect the current xcode
     #  version.
     def self.default_simulator(xcode=RunLoop::Xcode.new)
+      version = xcode.version
+      xcode_major = version.major
+      xcode_minor = version.minor
+      major = xcode_major + 2
+      minor = xcode_minor
 
-      if xcode.version_gte_73?
-        "iPhone 6s (9.3)"
-      elsif xcode.version_gte_72?
-        "iPhone 6s (9.2)"
-      elsif xcode.version_gte_71?
-        "iPhone 6s (9.1)"
-      elsif xcode.version_gte_7?
-        "iPhone 5s (9.0)"
-      elsif xcode.version_gte_64?
-        "iPhone 5s (8.4 Simulator)"
-      elsif xcode.version_gte_63?
-        "iPhone 5s (8.3 Simulator)"
-      elsif xcode.version_gte_62?
-        "iPhone 5s (8.2 Simulator)"
-      elsif xcode.version_gte_61?
-        "iPhone 5s (8.1 Simulator)"
+      if xcode_major == 10
+        model = "XS"
       else
-        "iPhone 5s (8.0 Simulator)"
+        model = xcode_major - 1
       end
-    end
 
+      "iPhone #{model} (#{major}.#{minor})"
+    end
 
     def self.create_uia_pipe(repl_path)
       begin
@@ -314,8 +341,7 @@ Logfile: #{log_file}
             begin
               FileUtils.rm_f(repl_path)
               return repl_path if system(%Q[mkfifo "#{repl_path}"])
-            rescue Errno::EINTR => e
-              #retry
+            rescue Errno::EINTR => _
               sleep(0.1)
             end
           end
@@ -351,7 +377,7 @@ Logfile: #{log_file}
         raise RunLoop::WriteFailedError.new("Trying write of command #{cmd_str} at index #{index}")
       end
       run_loop[:index] = index + 1
-      RunLoop::HostCache.default.write(run_loop) unless RunLoop::Environment.xtc?
+      RunLoop::Cache.default.write(run_loop) unless RunLoop::Environment.xtc?
       index
     end
 
@@ -467,7 +493,7 @@ Logfile: #{log_file}
       end
 
       run_loop[:initial_offset] = offset
-      RunLoop::HostCache.default.write(run_loop) unless RunLoop::Environment.xtc?
+      RunLoop::Cache.default.write(run_loop) unless RunLoop::Environment.xtc?
       result
     end
 
@@ -481,6 +507,14 @@ Logfile: #{log_file}
     def self.default_tracetemplate(instruments=RunLoop::Instruments.new)
 
       templates = instruments.templates
+
+      if instruments.xcode.version_gte_8?
+        raise(RuntimeError, %Q[
+
+There is no Automation template for this #{instruments.xcode} version.
+
+])
+      end
 
       # xcrun instruments -s templates
       # Xcode >= 6 will return known, Apple defined tracetemplates as names
@@ -503,131 +537,20 @@ Logfile: #{log_file}
         return candidate.tr("\"", '').strip
       end
 
-      message = ['Expected instruments to report an Automation tracetemplate.',
-                 'Please report this as bug:  https://github.com/calabash/run_loop/issues',
-                 "In the bug report, include the output of:\n",
-                 '$ xcrun xcodebuild -version',
-                 "$ xcrun instruments -s templates\n"]
-      raise message.join("\n")
-    end
+      raise(RuntimeError, %Q[
+Expected instruments to report an Automation tracetemplate.
 
-    # @deprecated 2.1.0
-    # Replaced with Device.detect_physical_device_on_usb
-    def self.detect_connected_device
-      begin
-        Timeout::timeout(1, RunLoop::TimeoutError) do
-          return `#{File.join(scripts_path, 'udidetect')}`.chomp
-        end
-      rescue RunLoop::TimeoutError => _
-        `killall udidetect &> /dev/null`
-      end
-      nil
-    end
+Please report this as bug:  https://github.com/calabash/run_loop/issues
 
-    # @deprecated 2.1.0
-    # @!visibility private
-    # Are we targeting a simulator?
-    #
-    # @note  The behavior of this method is different than the corresponding
-    #   method in Calabash::Cucumber::Launcher method.  If
-    #   `:device_target => {nil | ''}`, then the calabash-ios method returns
-    #   _false_.  I am basing run-loop's behavior off the behavior in
-    #   `self.udid_and_bundle_for_launcher`
-    #
-    # @see {Core::RunLoop.udid_and_bundle_for_launcher}
-    #
-    # @todo sim_control argument is no longer necessary and can be removed.
-    def self.simulator_target?(run_options, sim_control=nil)
-      # TODO Enable deprecation warning
-      # RunLoop.deprecated("2.1.0", "No replacement")
-      value = run_options[:device_target]
+In the bug report, include the output of:
 
-      # Match the behavior of udid_and_bundle_for_launcher.
-      return true if value.nil? or value == ''
-
-      # 5.1 <= Xcode < 7.0
-      return true if value.downcase.include?('simulator')
-
-      # Not a physical device.
-      return false if value[DEVICE_UDID_REGEX, 0] != nil
-
-      # Check for named simulators and Xcode >= 7.0 simulators.
-      simctl = run_options[:sim_control] || run_options[:simctl] || RunLoop::Simctl.new
-      xcode = run_options[:xcode] || RunLoop::Xcode.new
-      simulator = simctl.simulators.find do |sim|
-        [
-          sim.instruments_identifier(xcode) == value,
-          sim.udid == value,
-          sim.name == value
-        ].any?
-      end
-      !simulator.nil?
-    end
-
-    # @!visibility private
-    # @deprecated 2.1.0
-    #
-    # Do not call this method.
-    def self.udid_and_bundle_for_launcher(device_target, options, simctl=RunLoop::Simctl.new)
-      RunLoop.deprecated("2.1.0", "No replacement")
-      xcode = RunLoop::Xcode.new
-
-      bundle_dir_or_bundle_id = options[:app] || RunLoop::Environment.bundle_id || RunLoop::Environment.path_to_app_bundle
-
-      unless bundle_dir_or_bundle_id
-        raise 'key :app or environment variable APP_BUNDLE_PATH, BUNDLE_ID or APP must be specified as path to app bundle (simulator) or bundle id (device)'
-      end
-
-      if device_target.nil? || device_target.empty? || device_target == 'simulator'
-        device_target = self.default_simulator(xcode)
-      end
-      udid = device_target
-
-      unless self.simulator_target?(options)
-        bundle_dir_or_bundle_id = options[:bundle_id] if options[:bundle_id]
-      end
-      return udid, bundle_dir_or_bundle_id
-    end
-
-    # @deprecated 1.0.5
-    def self.ensure_instruments_not_running!
-      RunLoop::Instruments.new.kill_instruments
+$ xcrun xcodebuild -version
+$ xcrun instruments -s templates
+])
     end
 
     def self.instruments_running?
       RunLoop::Instruments.new.instruments_running?
-    end
-
-    # @deprecated 1.0.5
-    def self.instruments_pids
-      RunLoop::Instruments.new.instruments_pids
-    end
-
-    # @deprecated 1.0.0 replaced with Xctools#version
-    def self.xcode_version(xcode=RunLoop::Xcode.new)
-      xcode.version
-    end
-
-    # @deprecated since 1.0.0
-    # still used extensively in calabash-ios launcher
-    def self.above_or_eql_version?(target_version, xcode_version)
-      if target_version.is_a?(RunLoop::Version)
-        target = target_version
-      else
-        target = RunLoop::Version.new(target_version)
-      end
-
-      if xcode_version.is_a?(RunLoop::Version)
-        xcode = xcode_version
-      else
-        xcode = RunLoop::Version.new(xcode_version)
-      end
-      target >= xcode
-    end
-
-    # @deprecated 1.0.5
-    def self.pids_for_run_loop(run_loop, &block)
-      RunLoop::Instruments.new.instruments_pids(&block)
     end
 
     private
@@ -668,6 +591,45 @@ Logfile: #{log_file}
               "Invalid strategy: expected '#{strategy}' to be :host, :preferences, or :shared_element"
       end
       strategy
+    end
+
+    # @!visibility private
+    #
+    # There is an unnatural relationship between the :script and the
+    # :uia_strategy keys.
+    #
+    # @param [Hash] options The launch options passed to .run_with_options
+    # @param [RunLoop::Device] device The device under test.
+    # @param [RunLoop::Xcode] xcode The active Xcode.
+    #
+    # @return [Hash] with two keys: :script and :uia_strategy
+    def self.detect_instruments_script_and_strategy(options, device, xcode)
+      strategy = options[:uia_strategy]
+      script = options[:script]
+
+      if script
+        script = self.expect_instruments_script(script)
+        if !strategy
+          strategy = :host
+        end
+      else
+        if strategy
+          script = self.instruments_script_for_uia_strategy(strategy)
+        else
+          if options[:calabash_lite]
+            strategy = :host
+            script = self.instruments_script_for_uia_strategy(strategy)
+          else
+            strategy = self.detect_uia_strategy(options, device, xcode)
+            script = self.instruments_script_for_uia_strategy(strategy)
+          end
+        end
+      end
+
+      {
+        :script => script,
+        :strategy => strategy
+      }
     end
 
     # @!visibility private
@@ -717,26 +679,14 @@ Logfile: #{log_file}
       # Validate the architecture.
       self.expect_simulator_compatible_arch(device, app)
 
-      # Quits the simulator.
-      core_sim = RunLoop::CoreSimulator.new(device, app, :xcode => xcode)
+      RunLoop::CoreSimulator.quit_simulator
+      core_sim = RunLoop::CoreSimulator.new(device, app, xcode: xcode)
 
       # Calabash 0.x can only reset the app sandbox (true/false).
       # Calabash 2.x has advanced reset options.
       if reset_options
         core_sim.reset_app_sandbox
       end
-
-      # Will quit the simulator if it is running.
-      # @todo fix accessibility_enabled? so we don't have to quit the sim
-      # SimControl#accessibility_enabled? is always false during Core#prepare_simulator
-      # https://github.com/calabash/run_loop/issues/167
-      simctl.ensure_accessibility(device)
-
-      # Will quit the simulator if it is running.
-      # @todo fix software_keyboard_enabled? so we don't have to quit the sim
-      # SimControl#software_keyboard_enabled? is always false during Core#prepare_simulator
-      # https://github.com/calabash/run_loop/issues/168
-      simctl.ensure_software_keyboard(device)
 
       # Launches the simulator if the app is not installed.
       core_sim.install
@@ -760,5 +710,48 @@ Logfile: #{log_file}
 
       RunLoop.log_debug("Simulator instruction set '#{device.instruction_set}' is compatible with '#{lipo.info}'")
     end
+
+    # @!visibility private
+    def self.expect_instruments_script(script)
+      if script.is_a?(String)
+        unless File.exist?(script)
+          raise %Q[Expected instruments JavaScript file at path:
+
+#{script}
+
+Check the :script key in your launch options.]
+        end
+        script
+      elsif script.is_a?(Symbol)
+        path = self.script_for_key(script)
+        if !path
+          raise %Q[Expected :#{script} to be one of:
+
+#{Core::SCRIPTS.keys.map { |key| ":#{key}" }.join("\n")}
+
+Check the :script key in your launch options.]
+        end
+        path
+      else
+        raise %Q[Expected '#{script}' to be a Symbol or a String.
+
+Check the :script key in your launch options.]
+      end
+    end
+
+    # @!visibility private
+    def self.instruments_script_for_uia_strategy(uia_strategy)
+      case uia_strategy
+      when :preferences
+        self.script_for_key(:run_loop_fast_uia)
+      when :host
+        self.script_for_key(:run_loop_host)
+      when :shared_element
+        self.script_for_key(:run_loop_shared_element)
+      else
+        self.script_for_key(:run_loop_basic)
+      end
+    end
   end
 end
+

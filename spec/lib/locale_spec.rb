@@ -22,6 +22,8 @@ describe RunLoop::Locale do
   end
 
   describe ".valid_locales" do
+    let (:ios110) { RunLoop::Version.new("11.0") }
+    let (:ios100) { RunLoop::Version.new("10.0") }
     let (:ios91) { RunLoop::Version.new("9.1") }
     let (:ios90) { RunLoop::Version.new("9.0") }
     let (:ios80) { RunLoop::Version.new("8.0") }
@@ -34,16 +36,30 @@ describe RunLoop::Locale do
       expect(ios90_locales.count).to be == ios91_locales.count
     end
 
-    it "supports iOS 9" do
-      ios90_locales = RunLoop::Locale.valid_locales(ios90)
+    it "supports iOS 11" do
+      locales = RunLoop::Locale.valid_locales(ios110)
+      expect(locales.count).to be == 789
+    end
 
-      expect(ios90_locales.empty?).to be_falsey
+    it "supports iOS 10" do
+      locales = RunLoop::Locale.valid_locales(ios100)
+
+      expect(locales.empty?).to be_falsey
+      expect(locales.count).to be == 739
+    end
+
+    it "supports iOS 9" do
+      locales = RunLoop::Locale.valid_locales(ios90)
+
+      expect(locales.empty?).to be_falsey
+      expect(locales.count).to be == 731
     end
 
     it "supports iOS 8" do
-      ios80_locales = RunLoop::Locale.valid_locales(ios80)
+      locales = RunLoop::Locale.valid_locales(ios80)
 
-      expect(ios80_locales.empty?).to be_falsey
+      expect(locales.empty?).to be_falsey
+      expect(locales.count).to be == 689
     end
 
     it "supports no other iOS version" do

@@ -1,28 +1,33 @@
-require 'thor'
-require 'run_loop'
-require 'run_loop/cli/errors'
 
 module RunLoop
   module CLI
+
+    require 'thor'
     class Simctl < Thor
+
+      require 'run_loop'
+      require 'run_loop/cli/errors'
 
       attr_reader :simctl
 
       desc 'tail', 'Tail the log file of the booted simulator'
       def tail
-        tail_booted
+        tail_simulator_logs
       end
 
       no_commands do
-        def tail_booted
-          device = booted_device
-          if device.nil?
-            version = xcode.version
-            puts "No simulator for active Xcode (version #{version}) is booted."
-          else
-            log_file = device.simulator_log_file_path
-            exec('tail', *['-F', log_file])
-          end
+        def tail_simulator_logs
+          paths = simctl.simulators.map do |simulator|
+            log_file_path = simulator.simulator_log_file_path
+            if log_file_path && File.exist?(log_file_path)
+              log_file_path
+            else
+              nil
+            end
+          end.compact
+
+          args = ["-n", "1000", "-F"] + paths
+          exec("tail", *args)
         end
       end
 
@@ -103,11 +108,6 @@ module RunLoop
 
         begin
           RunLoop::CoreSimulator.terminate_core_simulator_processes
-          process_name = "com.apple.CoreSimulator.CoreSimulatorService"
-          RunLoop::ProcessWaiter.new(process_name).pids.each do |pid|
-            kill_options = { :timeout => 0.5 }
-            RunLoop::ProcessTerminator.new(pid, 'KILL', process_name, kill_options)
-          end
         ensure
           ENV['DEBUG'] = original_value if debug
         end
@@ -189,6 +189,60 @@ module RunLoop
         end
       end
 
+      desc "erase <simulator>", "Erases the simulator"
+
+      method_option 'debug',
+                    :desc => 'Enable debug logging.',
+                    :aliases => '-v',
+                    :required => false,
+                    :default => false,
+                    :type => :boolean
+
+      def erase(simulator=nil)
+
+        debug = options[:debug]
+
+        RunLoop::Environment.with_debugging(debug) do
+          if !simulator
+            identifier = RunLoop::Core.default_simulator(xcode)
+          else
+            identifier = simulator
+          end
+
+          options = {simctl: simctl, xcode: xcode}
+          device = RunLoop::Device.device_with_identifier(identifier, options)
+
+          RunLoop::CoreSimulator.erase(device, options)
+        end
+      end
+
+      desc "launch <simulator>", "Launches the simulator"
+
+      method_option 'debug',
+                    :desc => 'Enable debug logging.',
+                    :aliases => '-v',
+                    :required => false,
+                    :default => false,
+                    :type => :boolean
+
+      def launch(simulator=nil)
+        debug = options[:debug]
+
+        RunLoop::Environment.with_debugging(debug) do
+          if !simulator
+            identifier = RunLoop::Core.default_simulator(xcode)
+          else
+            identifier = simulator
+          end
+
+          options = {simctl: simctl, xcode: xcode}
+          device = RunLoop::Device.device_with_identifier(identifier, options)
+
+          core_sim = RunLoop::CoreSimulator.new(device, nil)
+          core_sim.launch_simulator
+        end
+      end
+
       no_commands do
         def expect_device(options)
           device_from_options = options[:device]
@@ -196,7 +250,7 @@ module RunLoop
           if device_from_options.nil?
             default_name = RunLoop::Core.default_simulator
             device = simulators.find do |sim|
-              sim.instruments_identifier(xcode) == default_name
+              sim.instruments_identifier == default_name
             end
 
             if device.nil?
@@ -206,7 +260,7 @@ module RunLoop
           else
             device = simulators.find do |sim|
               sim.udid == device_from_options ||
-                    sim.instruments_identifier(xcode) == device_from_options
+                    sim.instruments_identifier == device_from_options
             end
 
             if device.nil?

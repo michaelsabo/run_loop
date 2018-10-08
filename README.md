@@ -9,23 +9,36 @@
 
 ### Requirements
 
-* Xcode 6 and 7.
-* ruby >= 2.0
+* at least Xcode 9.4.1
+* ruby 2.3.*; ruby > 2.3 is not supported.
 
-The most recent versions of Xcode and ruby are strongly recommended.
+The most recent version of Xcode is strong recommended.
 
 ### License
 
 Run Loop is available under the MIT license. See the LICENSE file for more info.
 
+Licenses for third-party software can be found in `./vendor-licenses`.
+
 ### Versioning
 
-Run Loop follows the spirit of Semantic Versioning. [1]  However, the semantic versioning spec is incompatible with RubyGem's patterns for pre-release gems. [2]
+Run Loop follows the spirit of Semantic Versioning. [1]  However, the semantic
+versioning spec is incompatible with RubyGem's patterns for pre-release gems.[2]
 
 _"But returning to the practical: No release version of SemVer is compatible with Rubygems."_ - David Kellum
 
+If a method, class, or constant is marked with:
+
+```
+# @!visibility private
+```
+
+it is not part of the public API and the behavior is subject to change
+at any time.
+
 - [1] http://semver.org/
 - [2] http://gravitext.com/2012/07/22/versioning.html
+
 
 ## For Run Loop Gem Developers
 
@@ -39,6 +52,13 @@ At this time, there is no reason to update.
 
 - [1] https://github.com/vaskas/udidetect/pull/3
 
+## Building Device Agent Resources
+
+It is your responsibility for checking the git branch.
+
+```
+$ rake device_agent:install
+```
 
 ### Tests
 
@@ -47,13 +67,7 @@ At this time, there is no reason to update.
 * https://travis-ci.org/calabash/calabash-ios
 * https://travis-ci.org/calabash/run\_loop
 * https://travis-ci.org/calabash/calabash-ios-server
-* Calabash iOS toolchain testing - http://ci.endoftheworl.de:8080/
-
-To simulate CI locally:
-
-```
-$ scripts/ci/travis/local-run-as-travis.rb
-```
+* http://calabash-ci.macminicolo.net:8080/
 
 #### Unit Tests
 
@@ -63,15 +77,13 @@ $ be rake unit
 
 #### Integration Tests
 
-Take a break because these test launch and quit the simulator multiple times
-which hijacks your machine.  You have enough time to take some deep breaths
-and do some stretching.  You'll feel better afterward.
+Take a break because these test launch and quit the simulator multiple
+times.  You have enough time to take some deep breaths and do some
+stretching.  You'll feel better afterward.
+
+Make sure you have hardware keyboard disabled if testing on the simulator.
 
 For continuous TDD/BDD see the Guard section below.
-
-**TMUX USERS**
-
-Do not try to run the integration tests in a tmux session.  Trust me.
 
 ```
 $ be rake integration
@@ -89,20 +101,22 @@ $ be rake integration
 If you have alternative Xcode installs that look like this:
 
 ```
-/Xcode/5.1/Xcode.app
-/Xcode/5.1.1/Xcode.app
-/Xcode/6.1.1/Xcode.app
-/Xcode/6.2/Xcode-Beta.app
-/Xcode/6.3/Xcode-Beta.app
+/Xcode/9.4.1/Xcode.app
+/Xcode/10.0/Xcode.app
+/Xcode/10.1/Xcode.app
+/Xcode/10.2/Xcode-Beta.app
 ```
 
 the rspec tests will do regression testing against each version.
 
 ##### Guard
 
-Requires MacOS Growl - available in the AppStore.
+Guard requires terminal-notifier-guard
+
+https://github.com/Codaisseur/terminal-notifier-guard
 
 ```
+$ brew install terminal-notifier-guard
 $ be guard
 ```
 

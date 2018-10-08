@@ -3,9 +3,9 @@ describe RunLoop::Device do
   describe "SIM_STABLE_STATE_OPTIONS" do
     it ":timeout" do
       if RunLoop::Environment.ci?
-        expected = 120
+        expected = 240
       else
-        expected = 30
+        expected = 120
       end
 
       actual = RunLoop::Device::SIM_STABLE_STATE_OPTIONS[:timeout]
@@ -42,7 +42,17 @@ describe RunLoop::Device do
         end
       end
     end
+
+    context "#simctl" do
+      it "is a memoized attr reader" do
+        simctl = device.send(:simctl)
+        expect(device.send(:simctl)).to be == simctl
+        expect(device.instance_variable_get(:@simctl)).to be == simctl
+        expect(simctl).to be_a_kind_of(RunLoop::Simctl)
+      end
+    end
   end
+
 
   describe '#to_s' do
     it 'physical device' do
@@ -57,6 +67,37 @@ describe RunLoop::Device do
                                    '8.3',
                                    'CE5BA25E-9434-475A-8947-ECC3918E64E3')
       expect { device.to_s }.not_to raise_error
+    end
+  end
+
+  context "#simulator_instruments_identifier_same_as?" do
+    let(:device) { RunLoop::Device.new("iPhone 8",
+                                       "11.0.1",
+                                       'CE5BA25E-9434-475A-8947-ECC3918E64E3') }
+
+    it "returns true if sim identifier is == arg" do
+      actual = device.simulator_instruments_identifier_same_as?("iPhone 8 (11.0.1)")
+      expect(actual).to be true
+    end
+
+    it "returns true if model number and the major.minor part of id is == arg" do
+      actual = device.simulator_instruments_identifier_same_as?("iPhone 8 (11.0)")
+      expect(actual).to be true
+    end
+
+    it "returns false if model number does not match arg" do
+      actual = device.simulator_instruments_identifier_same_as?("iPhone X (11.0.1)")
+      expect(actual).to be false
+    end
+
+    it "returns false if major part of id does not match arg" do
+      actual = device.simulator_instruments_identifier_same_as?("iPhone 8 (12.0.1)")
+      expect(actual).to be false
+    end
+
+    it "returns false if minor part of id does not match arg" do
+      actual = device.simulator_instruments_identifier_same_as?("iPhone 8 (12.1.1)")
+      expect(actual).to be false
     end
   end
 
@@ -113,7 +154,7 @@ describe RunLoop::Device do
 
       it 'find by name' do
         expect(simctl).to receive(:simulators).and_return([device])
-        identifier = device.instruments_identifier(xcode)
+        identifier = device.instruments_identifier
 
         actual = RunLoop::Device.device_with_identifier(identifier, options)
         expect(actual).to be_a_kind_of RunLoop::Device
@@ -140,7 +181,7 @@ describe RunLoop::Device do
     end
   end
 
-  context '#device?' do
+  context '#physical_device?' do
     subject { device.physical_device? }
     context 'is a physical device' do
       let(:device) { RunLoop::Device.new('name', '7.1.2', '30c4b52a41d0f6c64a44bd01ff2966f03105de1e', 'Shutdown') }
@@ -153,9 +194,82 @@ describe RunLoop::Device do
     end
   end
 
+  context "#compatible_with_xcode_version?" do
+    let(:device) do
+      RunLoop::Device.new("name", "7.1.2",
+                          "77DA3AC3-EB3E-4B24-B899-4A20E315C318",
+                          "Shutdown")
+    end
+
+    it "returns true if iOS version is compatible with Xcode version" do
+      device_version = RunLoop::Version.new("11.2")
+      expect(device).to receive(:version).at_least(:once).and_return(device_version)
+
+      xcode_version = RunLoop::Version.new("9.2")
+      expect(device.compatible_with_xcode_version?(xcode_version)).to be_truthy
+
+      xcode_version = RunLoop::Version.new("10.0")
+      expect(device.compatible_with_xcode_version?(xcode_version)).to be_truthy
+
+      xcode_version = RunLoop::Version.new("12.0")
+      expect(device.compatible_with_xcode_version?(xcode_version)).to be_truthy
+
+    end
+
+    it "returns false if simulator iOS version is too low for Xcode version" do
+      expect(device).to receive(:physical_device?).at_least(:once).and_return(false)
+      device_version = RunLoop::Version.new("7.2")
+      expect(device).to receive(:version).at_least(:once).and_return(device_version)
+
+      xcode_version = RunLoop::Version.new("9.0")
+      expect(device.compatible_with_xcode_version?(xcode_version)).to be_falsey
+    end
+
+    it "returns true if physical device iOS version was ever supported by the Xcode version" do
+      # There is no known lower bound for support
+      expect(device).to receive(:physical_device?).at_least(:once).and_return(true)
+      device_version = RunLoop::Version.new("7.2")
+      expect(device).to receive(:version).at_least(:once).and_return(device_version)
+
+      xcode_version = RunLoop::Version.new("9.0")
+      expect(device.compatible_with_xcode_version?(xcode_version)).to be_truthy
+    end
+
+    it "returns false if iOS version is too high for the Xcode version" do
+      device_version = RunLoop::Version.new("11.2")
+      expect(device).to receive(:version).at_least(:once).and_return(device_version)
+
+      xcode_version = RunLoop::Version.new("8.0")
+      expect(device.compatible_with_xcode_version?(xcode_version)).to be_falsey
+
+      xcode_version = RunLoop::Version.new("9.0")
+      expect(device.compatible_with_xcode_version?(xcode_version)).to be_falsey
+
+      xcode_version = RunLoop::Version.new("9.1")
+      expect(device.compatible_with_xcode_version?(xcode_version)).to be_falsey
+    end
+
+    it "returns false if iOS Simulator version is too low for the Xcode version" do
+      device_version = RunLoop::Version.new("7.2")
+      expect(device).to receive(:version).at_least(:once).and_return(device_version)
+
+      xcode_version = RunLoop::Version.new("10.0")
+      expect(device.compatible_with_xcode_version?(xcode_version)).to be_falsey
+
+      xcode_version = RunLoop::Version.new("9.0")
+      expect(device.compatible_with_xcode_version?(xcode_version)).to be_falsey
+
+      xcode_version = RunLoop::Version.new("9.1")
+      expect(device.compatible_with_xcode_version?(xcode_version)).to be_falsey
+
+      xcode_version = RunLoop::Version.new("9.2")
+      expect(device.compatible_with_xcode_version?(xcode_version)).to be_falsey
+    end
+  end
+
   describe '#instruments_identifier' do
 
-    subject { device.instruments_identifier(xcode) }
+    subject { device.instruments_identifier }
 
     let(:xcode) { RunLoop::Xcode.new }
 
@@ -164,35 +278,14 @@ describe RunLoop::Device do
       it { is_expected.to be == 'e60ef9ae876ab4a218ee966d0525c9fb79e5606d' }
     end
 
-    describe 'simulator' do
-      describe 'Xcode > 7.0' do
-        before { expect(xcode).to receive(:version_gte_7?).and_return true }
-        context 'with Major.Minor SDK version' do
-          let(:device) { RunLoop::Device.new('Form Factor', '8.1.1', '14A15E35-C568-4775-9480-4FC0C2648236', 'Shutdown') }
-          it { is_expected.to be == 'Form Factor (8.1)' }
-        end
+    context 'simulator with major.minor version' do
+      let(:device) { RunLoop::Device.new('iPhone X', '10.2', '<udid>', 'Shutdown') }
+      it { is_expected.to be == "iPhone X (10.2)" }
+    end
 
-        context 'with Major.Minor.Patch SDK version' do
-          let(:device) { RunLoop::Device.new('Form Factor', '7.0.3', '14A15E35-C568-4775-9480-4FC0C2648236', 'Shutdown') }
-          it { is_expected.to be == 'Form Factor (7.0.3)' }
-        end
-      end
-
-      describe '6.0 <= Xcode < 7.0' do
-        before do
-          expect(xcode).to receive(:version_gte_7?).and_return false
-        end
-
-        context 'with Major.Minor SDK version' do
-          let(:device) { RunLoop::Device.new('Form Factor', '8.1.1', 'not a device udid', 'Shutdown') }
-          it { is_expected.to be == 'Form Factor (8.1 Simulator)' }
-        end
-
-        context 'with Major.Minor.Patch SDK version' do
-          let(:device) { RunLoop::Device.new('Form Factor', '7.0.3', 'not a device udid', 'Shutdown') }
-          it { is_expected.to be == 'Form Factor (7.0.3 Simulator)' }
-        end
-      end
+    context 'simulator with major.minor.path version' do
+      let(:device) { RunLoop::Device.new('iPhone X', '10.2.1', '<udid>', 'Shutdown') }
+      it { is_expected.to be == "iPhone X (10.2.1)" }
     end
   end
 
@@ -221,109 +314,161 @@ describe RunLoop::Device do
     end
   end
 
-  describe 'simulator files' do
-    let (:physical) {  RunLoop::Device.new('name',
-                                           '7.1.2',
-                                           '30c4b52a41d0f6c64a44bd01ff2966f03105de1e') }
-    let (:simulator) { RunLoop::Device.new('iPhone 5s',
-                                           '7.1.2',
-                                           '77DA3AC3-EB3E-4B24-B899-4A20E315C318', 'Shutdown') }
-    describe '#simulator_root_dir' do
-      it 'is nil if physical device' do
-        expect(physical.simulator_root_dir).to be_falsey
+  context "simulator files" do
+    let(:physical) do
+      RunLoop::Device.new("name", "7.1.2",
+                          "30c4b52a41d0f6c64a44bd01ff2966f03105de1e")
+    end
+
+    let (:simulator) do
+      RunLoop::Device.new("iPhone 5s", "7.1.2",
+                          "77DA3AC3-EB3E-4B24-B899-4A20E315C318", "Shutdown")
+    end
+
+    context "#simulator_root_dir" do
+      it "returns nil when physical device" do
+        expect(physical.simulator_root_dir).to be == nil
       end
 
-      it 'is non nil if a simulator' do
-        expect(simulator.simulator_root_dir[/#{simulator.udid}/,0]).to be_truthy
+      it "returns path to Library/Developer/CoreSimulator/<UDID>" do
+        expect(simulator.simulator_root_dir[/#{simulator.udid}/]).to be_truthy
       end
     end
 
-    describe '#simulator_accessibility_plist_path' do
-      it 'is nil if physical device' do
-        expect(physical.simulator_accessibility_plist_path).to be_falsey
+    context "#simulator_log_file_path" do
+      it "returns nil when physical device" do
+        expect(physical.simulator_log_file_path).to be == nil
       end
 
-      it 'is non nil if a simulator' do
-        expect(simulator.simulator_accessibility_plist_path[/#{simulator.udid}/,0]).to be_truthy
-        expect(simulator.simulator_accessibility_plist_path[/com.apple.Accessibility.plist/,0]).to be_truthy
-      end
-    end
-
-    describe '#simulator_preferences_plist_path' do
-      it 'is nil if physical device' do
-        expect(physical.simulator_preferences_plist_path).to be_falsey
-      end
-
-      it 'is non nil if a simulator' do
-        expect(simulator.simulator_preferences_plist_path[/#{simulator.udid}/,0]).to be_truthy
-        expect(simulator.simulator_preferences_plist_path[/com.apple.Preferences.plist/,0]).to be_truthy
+      it "returns path to Library/Logs/CoreSimulator/<UDID>/system.log" do
+        actual = simulator.simulator_log_file_path
+        expect(actual[/#{simulator.udid}/]).to be_truthy
+        expect(actual[/system.log/]).to be_truthy
       end
     end
 
-    describe '#simulator_log_file_path' do
-      it 'is nil if physical device' do
-        expect(physical.simulator_log_file_path).to be_falsey
+    context "simulator plists" do
+      let(:root_dir) do
+        File.join(Resources.shared.local_tmp_dir, "CoreSimulator", "Devices",
+                  simulator.udid)
       end
 
-      it 'is non nil if a simulator' do
-        expect(simulator.simulator_log_file_path[/#{simulator.udid}/,0]).to be_truthy
-        expect(simulator.simulator_log_file_path[/system.log/,0]).to be_truthy
+      before do
+        FileUtils.rm_rf(root_dir)
+        FileUtils.mkdir_p(root_dir)
+      end
+
+      context "#simulator_accessibility_plist_path" do
+        it "returns nil when physical device" do
+          expect(physical.simulator_accessibility_plist_path).to be == nil
+        end
+
+        it "returns path to Accessibility.plist when device is a simulator" do
+          expect(simulator).to receive(:simulator_root_dir).and_return(root_dir)
+
+          actual = simulator.simulator_accessibility_plist_path
+
+          expect(actual[/com.apple.Accessibility.plist/]).to be_truthy
+        end
+      end
+
+      context "#simulator_device_plist" do
+        it "returns nil physical device" do
+          expect(physical.simulator_device_plist).to be == nil
+        end
+
+        it "returns path to device.plist when device is a simulator" do
+          expect(simulator).to receive(:simulator_root_dir).and_return(root_dir)
+
+          actual = simulator.simulator_device_plist
+          expect(actual[/device.plist/]).to be_truthy
+        end
+      end
+
+      context "#simulator_global_preferences_path" do
+        it "returns nil for physical devices" do
+          expect(physical.simulator_global_preferences_path).to be == nil
+        end
+
+        it "returns path to the .GlobalPreferences.plist when simulator" do
+          expect(simulator).to receive(:simulator_root_dir).and_return(root_dir)
+
+          actual = simulator.simulator_global_preferences_path
+
+          expect(actual[/.GlobalPreferences.plist/]).to be_truthy
+        end
       end
     end
 
-    describe '#simulator_device_plist' do
-      it 'is nil if a physical device' do
-        expect(physical.simulator_device_plist).to be_falsey
-      end
+    it "#simulator_device_type" do
+      plist = "path/to/udid/data/device.plist"
+      expect(simulator).to receive(:simulator_device_plist).and_return(plist)
+      pbuddy = RunLoop::PlistBuddy.new
+      expect(simulator).to receive(:pbuddy).and_return(pbuddy)
+      expect(pbuddy).to receive(:plist_read).with("deviceType", plist).and_return(:type)
 
-      it 'is non-nil for simulators' do
-        actual = simulator.simulator_device_plist
-        expect(actual[/#{simulator.udid}\/device.plist/, 0]).to be_truthy
-      end
+      actual = simulator.send(:simulator_device_type)
+      expect(actual).to be == :type
     end
 
-    describe "#simulator_global_preferences_path" do
-      it "is nil if a physical device" do
-        expect(physical.simulator_global_preferences_path).to be_falsey
+    describe "#simulator_is_ipad?" do
+      let(:ipad) { "com.apple.CoreSimulator.SimDeviceType.iPad-Retina" }
+      let(:iphone) { "com.apple.CoreSimulator.SimDeviceType.iPhone-4s" }
+
+      it "false" do
+       expect(simulator).to receive(:simulator_device_type).and_return(iphone)
+
+       actual = simulator.send(:simulator_is_ipad?)
+       expect(actual).to be_falsey
       end
 
-      it "is non-nil for simulators" do
-        actual = simulator.simulator_global_preferences_path
-        expect(actual[/#{simulator.udid}/,0]).to be_truthy
-        expect(actual[/\.GlobalPreferences.plist/, 0]).to be_truthy
+      it "true" do
+       expect(simulator).to receive(:simulator_device_type).and_return(ipad)
+
+       actual = simulator.send(:simulator_is_ipad?)
+       expect(actual).to be_truthy
       end
     end
   end
 
-  describe "#simulator_languages" do
+  context "Simulator Language" do
     let(:device) { RunLoop::Device.new("iPhone 5s", "8.3", "udid") }
+    let(:root_dir) do
+      File.join(Resources.shared.local_tmp_dir, "CoreSimulator", "Devices",
+                device.udid)
+    end
     let(:pbuddy) { RunLoop::PlistBuddy.new }
-    let(:plist) { "a.plist" }
     let(:out) { "Array {\n    en\n    en-US\n}" }
 
     before do
-      expect(device).to receive(:simulator_global_preferences_path).and_return(plist)
-      expect(device).to receive(:pbuddy).and_return(pbuddy)
+      FileUtils.rm_rf(root_dir)
+      FileUtils.mkdir_p(root_dir)
+      allow(device).to receive(:simulator_root_dir).and_return(root_dir)
+      allow(device).to receive(:pbuddy).and_return(pbuddy)
     end
 
-    it "returns a list of AppleLanguages from global plist" do
-      expect(pbuddy).to receive(:plist_read).with("AppleLanguages", plist).and_return(out)
+    context "#simulator_languages" do
+      let(:plist) { device.simulator_global_preferences_path }
 
-      expect(device.simulator_languages).to be == ["en", "en-US"]
+      it "returns a list of AppleLanguages from global plist" do
+        expect(pbuddy).to(
+          receive(:plist_read).with("AppleLanguages", plist).and_return(out)
+        )
+
+        expect(device.simulator_languages).to be == ["en", "en-US"]
+      end
+
+      it "catches errors and returns the string as an array" do
+        expect(pbuddy).to(
+          receive(:plist_read).with("AppleLanguages", plist).and_return(nil)
+        )
+
+        expect(device.simulator_languages).to be == [nil]
+      end
     end
 
-    it "catches errors and returns the string as an array" do
-      expect(pbuddy).to receive(:plist_read).with("AppleLanguages", plist).and_return(nil)
-
-      expect(device.simulator_languages).to be == [nil]
-    end
-  end
-
-  describe "#simulator_set_language" do
-    let(:device) { RunLoop::Device.new("iPhone 5s", "8.3", "udid") }
-
-    describe "raises errors" do
-      it "this is a physical device" do
+    context "#simulator_set_language" do
+      it "raises error when this is a physical device" do
         expect(device).to receive(:physical_device?).and_return(true)
 
         expect do
@@ -331,26 +476,26 @@ describe RunLoop::Device do
         end.to raise_error RuntimeError, /This method is for Simulators only/
       end
 
-      it "language code is invalid" do
+      it "raises error language code is invalid" do
         expect do
           device.simulator_set_language("invalid code")
         end.to raise_error ArgumentError, /is not valid for this device/
       end
-    end
 
-    it "sets the language so it is _first_" do
-      plist = Resources.shared.global_preferences_plist
-      allow(device).to receive(:simulator_global_preferences_path).and_return(plist)
+      it "raises error when pbuddy#unshift_array fails" do
+        expect(pbuddy).to receive(:unshift_array).and_raise(RuntimeError)
 
-      actual = device.simulator_set_language("en")
+        expect do
+          device.simulator_set_language("en")
+        end.to raise_error RuntimeError, /Could not update the Simulator languages/
+      end
 
-      # Travis is running Xcode 6.1 which is not behaving the same as it
-      # is locally.  This is passing locally for all Xcodes and on El Cap
-      # Xcode 7.2.  Is it a difference in the PlistBuddy implementation?
-      if Luffa::Environment.travis_ci?
-        expect(actual).to be == ["en-US"]
-      else
-        expect(actual).to be == ["en", "en-US"]
+      it "sets the language so it is _first_" do
+        actual = device.simulator_set_language("de")
+        expect(actual).to be == ["de"]
+
+        actual = device.simulator_set_language("en")
+        expect(actual).to be == ["en", "de"]
       end
     end
   end
@@ -392,6 +537,73 @@ describe RunLoop::Device do
     end
   end
 
+  describe "simulator stable state" do
+
+    let(:simulator) { RunLoop::Device.new("denis", "9.0", "udid") }
+
+    describe "#simulator_data_directory_sha" do
+      let(:dir) { "path/to" }
+      let(:path) { "path/to/data" }
+      let(:options) { {:handle_errors_by => :ignoring} }
+
+      before do
+        expect(simulator).to receive(:simulator_root_dir).and_return(dir)
+      end
+      it "returns a sha" do
+        expect(RunLoop::Directory).to receive(:directory_digest).with(path, options).and_return(:sha)
+
+        actual = simulator.send(:simulator_data_directory_sha)
+        expect(actual).to be == :sha
+      end
+
+      it "returns a random udid" do
+        error = RuntimeError.new("sha error")
+        expect(RunLoop::Directory).to receive(:directory_digest).with(path, options).and_raise(error)
+        expect(SecureRandom).to receive(:uuid).and_return(:random)
+
+        actual = simulator.send(:simulator_data_directory_sha)
+        expect(actual).to be == :random
+      end
+    end
+
+    describe "#simulator_log_file_sha" do
+      let(:log) { "path/to/log/file" }
+
+      before do
+        expect(simulator).to receive(:simulator_log_file_path).and_return(log)
+      end
+
+      it "returns nil if log file does not exist" do
+        expect(File).to receive(:exist?).and_return(false)
+
+        actual = simulator.send(:simulator_log_file_sha)
+        expect(actual).to be == nil
+      end
+
+      describe "log exists" do
+        before do
+          expect(File).to receive(:exist?).with(log).and_return(true)
+        end
+
+        it "return random udid if File.read errors" do
+          error = RuntimeError.new("file read error")
+          expect(File).to receive(:read).with(log).and_raise(error)
+          expect(SecureRandom).to receive(:uuid).and_return(:random)
+
+          actual = simulator.send(:simulator_log_file_sha)
+          expect(actual).to be == :random
+        end
+
+        it "returns sha" do
+          expect(File).to receive(:read).with(log).and_return("sha!")
+
+          actual = simulator.send(:simulator_log_file_sha)
+          expect(actual.to_s).to be == "0c3115eb0d6c2d05a964415fada251e49f9bebe3cfa76a9c38d56648783c92d6"
+        end
+      end
+    end
+  end
+
   describe 'updating the device state' do
 
     before do
@@ -404,65 +616,6 @@ describe RunLoop::Device do
                           'CE5BA25E-9434-475A-8947-ECC3918E64E3')
     end
 
-    describe '#discern_state_from_line' do
-
-      it 'unavailable' do
-        line = 'iPhone 5 (AC1509A2-9DE3-4BDD-9820-258BB7D5B41F) (Shutdown) (unavailable, runtime profile not found)'
-
-        expect(simulator.send(:detect_state_from_line, line)).to be == 'Unavailable'
-      end
-
-      it 'unknown state' do
-        line = 'some line'
-
-        expect(simulator.send(:detect_state_from_line, line)).to be == 'Unknown'
-      end
-
-      it 'booted' do
-        line = 'iPad Air 2 (43A6049E-AFD6-4D9D-8510-E129FBB3FE0F) (Booted)'
-
-        expect(simulator.send(:detect_state_from_line, line)).to be == 'Booted'
-      end
-
-      it 'shutdown' do
-        line = 'iPad Air 2 (43A6049E-AFD6-4D9D-8510-E129FBB3FE0F) (Shutdown)'
-
-        expect(simulator.send(:detect_state_from_line, line)).to be == 'Shutdown'
-      end
-    end
-
-    describe '#fetch_simulator_state' do
-      it 'raises an error if the device is not a simulator' do
-        expect(simulator).to receive(:physical_device?).and_return true
-
-        expect do
-          simulator.send(:fetch_simulator_state)
-        end.to raise_error RuntimeError, /This method is available only for simulators/
-      end
-
-      it 'raises an error if the udid matches no simulator' do
-        xcrun = RunLoop::Xcrun.new
-        args = ['simctl', 'list', 'devices']
-        expect(xcrun).to receive(:exec).with(args).and_return({:out => ''})
-        expect(simulator).to receive(:xcrun).and_return xcrun
-
-        expect do
-          simulator.send(:fetch_simulator_state)
-        end.to raise_error RuntimeError, /Expected a simulator with udid/
-      end
-
-      it 'returns the state of the device' do
-        line = 'iPad Air 2 (CE5BA25E-9434-475A-8947-ECC3918E64E3) (Shutdown)'
-        hash = {:out => line}
-        xcrun = RunLoop::Xcrun.new
-        args = ['simctl', 'list', 'devices']
-        expect(xcrun).to receive(:exec).with(args).and_return(hash)
-        expect(simulator).to receive(:xcrun).and_return xcrun
-
-        expect(simulator.send(:fetch_simulator_state)).to be == 'Shutdown'
-      end
-    end
-
     describe '#update_simulator_state' do
       it 'raises error if called on a physical device' do
         expect(simulator).to receive(:physical_device?).and_return true
@@ -473,7 +626,8 @@ describe RunLoop::Device do
       end
 
       it 'sets the simulator state' do
-        expect(simulator).to receive(:fetch_simulator_state).and_return 'State'
+        simctl = simulator.send(:simctl)
+        expect(simctl).to receive(:simulator_state_as_string).and_return 'State'
 
         expect(simulator.update_simulator_state).to be == 'State'
         expect(simulator.instance_variable_get(:@state)).to be == 'State'

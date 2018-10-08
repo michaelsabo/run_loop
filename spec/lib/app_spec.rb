@@ -10,11 +10,20 @@ describe RunLoop::App do
     end
 
     it "raises an error if app bundle path is not valid" do
-      expect(RunLoop::App).to receive(:valid?).and_return(false)
+      expect do
+        RunLoop::App.new("path/does/not/exist")
+      end.to raise_error(ArgumentError,
+                         /App does not exist at path or is not an app bundle/)
+    end
+
+    it "raises an error if app bundle is 'cached'" do
+      expect(RunLoop::App).to receive(:cached_app_on_simulator?).and_return(true)
 
       expect do
-        expect(RunLoop::App.new("path/does/not/exist"))
-      end.to raise_error ArgumentError, /App does not exist at path or is not an app bundle/
+        RunLoop::App.new(File.join(Resources.shared.resources_dir,
+                                         "CachedSimApp.app"))
+      end.to raise_error(RuntimeError,
+                         /there was an incomplete install or uninstall/)
     end
   end
 
@@ -22,7 +31,7 @@ describe RunLoop::App do
     let(:path) { "path/to/My.app" }
     let(:info) { File.join(path, "Info.plist") }
     let(:name) { "My" }
-    let(:exec) { File.join(path, "My") }
+    let(:executable) { File.join(path, "My") }
     let(:pbuddy) { RunLoop::PlistBuddy.new }
 
     before do
@@ -61,7 +70,7 @@ describe RunLoop::App do
         it "executable file does not exist" do
           expect(RunLoop::App).to receive(:info_plist_exist?).with(path).and_return(true)
           expect(pbuddy).to receive(:plist_read).with("CFBundleExecutable", info).and_return(name)
-          expect(File).to receive(:exist?).with(exec).and_return(false)
+          expect(File).to receive(:exist?).with(executable).and_return(false)
 
           expect(RunLoop::App.send(:executable_file_exist?, path)).to be_falsey
         end
@@ -70,7 +79,7 @@ describe RunLoop::App do
       it "true" do
         expect(RunLoop::App).to receive(:info_plist_exist?).with(path).and_return(true)
         expect(pbuddy).to receive(:plist_read).with("CFBundleExecutable", info).and_return(name)
-        expect(File).to receive(:exist?).with(exec).and_return(true)
+        expect(File).to receive(:exist?).with(executable).and_return(true)
 
         expect(RunLoop::App.send(:executable_file_exist?, path)).to be_truthy
       end
@@ -133,6 +142,40 @@ describe RunLoop::App do
       expect(RunLoop::App).to receive(:valid?).with(app.path).and_return(true)
 
       expect(app.valid?).to be_truthy
+    end
+  end
+
+  context ".cached_app_on_simulator?" do
+    it "returns true if the .app bundle is sparse and installed on a simulator" do
+      tmpdir = File.join(Resources.shared.local_tmp_dir, "rspec", "app-tests",
+                         "81B79FDC-CAD7-4B0E-9704-9FBC31D56F51")
+      FileUtils.rm_rf(tmpdir)
+      FileUtils.mkdir_p(tmpdir)
+
+      app = File.join(tmpdir, "CachedSimApp.app")
+      FileUtils.cp_r(File.join(Resources.shared.resources_dir, "CachedSimApp.app"),
+                     app)
+      expect(RunLoop::App.cached_app_on_simulator?(app)).to be true
+
+      FileUtils.rm_rf(tmpdir)
+    end
+
+    it "returns false if the .app bundle is not installed a simulator" do
+      app = Resources.shared.app_bundle_path
+      expect(RunLoop::App.cached_app_on_simulator?(app)).to be false
+    end
+
+    it "returns false if the .app bundle contains any other files" do
+      tmpdir = File.join(Resources.shared.local_tmp_dir, "rspec", "app-tests",
+                         "81B79FDC-CAD7-4B0E-9704-9FBC31D56F51")
+      FileUtils.rm_rf(tmpdir)
+      FileUtils.mkdir_p(tmpdir)
+
+      app = File.join(tmpdir, "CalSmoke.app")
+      FileUtils.cp_r(Resources.shared.app_bundle_path, app)
+      expect(RunLoop::App.cached_app_on_simulator?(app)).to be false
+
+      FileUtils.rm_rf(tmpdir)
     end
   end
 
@@ -208,6 +251,19 @@ describe RunLoop::App do
     end
   end
 
+  context "#calabash_server_id" do
+    it "returns fingerprint of the embedded server" do
+      app = RunLoop::App.new(Resources.shared.cal_app_bundle_path)
+      actual = app.calabash_server_id
+      expect(actual[/[a-f0-9]{40}(-dirty)?/]).to be_truthy
+    end
+
+    it "returns nil if there is no embedded server" do
+      app = RunLoop::App.new(Resources.shared.app_bundle_path)
+      expect(app.calabash_server_id).to be == nil
+    end
+  end
+
   describe "#marketing_version" do
     let(:pbuddy) { RunLoop::PlistBuddy.new }
     let(:args) { ["CFBundleShortVersionString", app.info_plist_path] }
@@ -232,20 +288,20 @@ describe RunLoop::App do
 
   describe "#build_version" do
     let(:pbuddy) { RunLoop::PlistBuddy.new }
-    let(:args) { ["CFBundleVersionString", app.info_plist_path] }
+    let(:args) { ["CFBundleVersion", app.info_plist_path] }
 
     before do
       allow(app).to receive(:plist_buddy).and_return(pbuddy)
     end
 
-    it "valid CFBundleVersionString" do
+    it "valid CFBundleVersion" do
       expect(pbuddy).to receive(:plist_read).with(*args).twice.and_return("8.0")
 
       expect(app.build_version).to be == RunLoop::Version.new("8.0")
       expect(app.bundle_version).to be == RunLoop::Version.new("8.0")
     end
 
-    it "invalid CFBundleShortVersionString" do
+    it "invalid CFBundleVersion" do
       expect(pbuddy).to receive(:plist_read).with(*args).and_return("a.b.c")
 
       expect(app.build_version).to be == nil
@@ -356,18 +412,18 @@ describe RunLoop::App do
       FileUtils.cp(dylib, File.join(target, "CalSmoke.app"))
       app = RunLoop::App.new(File.join(target, "CalSmoke.app"))
 
-      actual = app.executables
+      actual = app.executables.sort
       expected = [
         File.join(app.path, app.executable_name),
         File.join(app.path, File.basename(dylib))
-      ]
+      ].sort
 
       expect(actual).to be == expected
     end
 
     it "returns an empty list if no executables are found" do
-      file = __FILE__
-      otool = RunLoop::Otool.new(file)
+      xcode = RunLoop::Xcode.new
+      otool = RunLoop::Otool.new(xcode)
       expect(app).to receive(:otool).at_least(:once).and_return(otool)
       expect(otool).to receive(:executable?).at_least(:once).and_return(false)
 
@@ -386,6 +442,7 @@ describe RunLoop::App do
     expect(app).to receive(:code_signing_asset?).with(path).and_return(false)
     expect(app).to receive(:core_data_asset?).with(path).and_return(false)
     expect(app).to receive(:font?).with(path).and_return(false)
+    expect(app).to receive(:build_artifact?).with(path).and_return(false)
 
     expect(app.send(:skip_executable_check?, path)).to be_falsey
   end
@@ -482,8 +539,8 @@ describe RunLoop::App do
   end
 
   describe "#font?" do
-    it "returns trues" do
-      expect(app.send(:font?, "path/to/my.tff")).to be_truthy
+    it "returns true" do
+      expect(app.send(:font?, "path/to/my.ttf")).to be_truthy
       expect(app.send(:font?, "path/to/my.otf")).to be_truthy
     end
 
@@ -492,10 +549,38 @@ describe RunLoop::App do
     end
   end
 
+  describe "#build_artifact?" do
+    it "returns true for .xcconfig" do
+      expect(app.send(:build_artifact?, "path/to/my.xcconfig")).to be_truthy
+    end
+
+    it "returns false for other files" do
+      expect(app.send(:build_artifact?, "path/to/my.extension")).to be_falsey
+    end
+  end
+
   it "#lipo" do
     actual = app.send(:lipo)
     expect(actual).to be_a_kind_of(RunLoop::Lipo)
     expect(app.instance_variable_get(:@lipo)).to be == actual
+  end
+
+  context "#otool" do
+    it "returns a memoized RunLoop::Otool instance" do
+      otool = app.send(:otool)
+      expect(app.send(:otool)).to be == otool
+      expect(app.instance_variable_get(:@otool)).to be == otool
+      expect(otool).to be_a_kind_of(RunLoop::Otool)
+    end
+  end
+
+  context "#xcode" do
+    it "returns a memoized RunLoop::Xcode instance" do
+      xcode = app.send(:xcode)
+      expect(app.send(:xcode)).to be == xcode
+      expect(app.instance_variable_get(:@xcode)).to be == xcode
+      expect(xcode).to be_a_kind_of(RunLoop::Xcode)
+    end
   end
 end
 

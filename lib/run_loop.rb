@@ -1,5 +1,8 @@
+require "run_loop/abstract"
 require 'run_loop/regex'
 require 'run_loop/directory'
+require "run_loop/encoding"
+require "run_loop/shell"
 require 'run_loop/environment'
 require 'run_loop/logging'
 require 'run_loop/dot_dir'
@@ -17,29 +20,35 @@ require 'run_loop/plist_buddy'
 require "run_loop/codesign"
 require 'run_loop/app'
 require 'run_loop/ipa'
+require "run_loop/http/error"
+require "run_loop/http/server"
+require "run_loop/http/request"
+require "run_loop/http/retriable_client"
+require "run_loop/device_agent/client"
+require "run_loop/device_agent/runner"
+require "run_loop/device_agent/frameworks"
+require "run_loop/device_agent/launcher_strategy"
+require "run_loop/device_agent/ios_device_manager"
+require "run_loop/device_agent/xcodebuild"
 require "run_loop/detect_aut/errors"
 require "run_loop/detect_aut/xamarin_studio"
 require "run_loop/detect_aut/xcode"
 require "run_loop/detect_aut/detect"
-require 'run_loop/sim_control'
 require 'run_loop/device'
 require 'run_loop/instruments'
 require 'run_loop/lipo'
 require "run_loop/otool"
 require "run_loop/strings"
-require 'run_loop/cache/cache'
-require 'run_loop/host_cache'
+require 'run_loop/cache'
+require "run_loop/sim_keyboard_settings"
 require 'run_loop/patches/awesome_print'
 require 'run_loop/core_simulator'
 require "run_loop/simctl"
 require 'run_loop/template'
 require "run_loop/locale"
 require "run_loop/language"
-require "run_loop/xcuitest"
-require "run_loop/http/error"
-require "run_loop/http/server"
-require "run_loop/http/request"
-require "run_loop/http/retriable_client"
+require "run_loop/physical_device/life_cycle"
+require "run_loop/physical_device/ios_device_manager"
 
 module RunLoop
 
@@ -66,10 +75,43 @@ module RunLoop
 
   def self.run(options={})
 
-    if options[:xcuitest]
-      RunLoop::XCUITest.run(options)
-    else
+    cloned_options = options.clone
 
+    # We want to use the _exact_ objects that were passed.
+    if options[:xcode]
+      cloned_options[:xcode] = options[:xcode]
+    else
+      cloned_options[:xcode] = RunLoop::Xcode.new
+    end
+
+    if options[:simctl]
+      cloned_options[:simctl] = options[:simctl]
+    else
+      cloned_options[:simctl] = RunLoop::Simctl.new
+    end
+
+    if options[:instruments]
+      cloned_options[:instruments] = options[:instruments]
+    else
+      cloned_options[:instruments] = RunLoop::Instruments.new
+    end
+
+    # Soon to be unsupported.
+    if options[:sim_control]
+      cloned_options[:sim_control] = options[:sim_control]
+    end
+
+    xcode = cloned_options[:xcode]
+    simctl = cloned_options[:simctl]
+    instruments = cloned_options[:instruments]
+
+    device = Device.detect_device(cloned_options, xcode, simctl, instruments)
+    cloned_options[:device] = device
+
+    automator = RunLoop.detect_automator(cloned_options, xcode, device)
+    if automator == :device_agent
+      RunLoop::DeviceAgent::Client.run(cloned_options)
+    else
       if RunLoop::Instruments.new.instruments_app_running?
         raise %q(The Instruments.app is open.
 
@@ -79,58 +121,6 @@ control of your application.
 Please quit the Instruments.app and try again.)
 
       end
-
-      uia_strategy = options[:uia_strategy]
-      if options[:script]
-        script = validate_script(options[:script])
-      else
-        if uia_strategy
-          script = default_script_for_uia_strategy(uia_strategy)
-        else
-          if options[:calabash_lite]
-            uia_strategy = :host
-            script = Core.script_for_key(:run_loop_host)
-          else
-            uia_strategy = :preferences
-            script = default_script_for_uia_strategy(uia_strategy)
-          end
-        end
-      end
-      # At this point, 'script' has been chosen, but uia_strategy might not
-      unless uia_strategy
-        desired_script = options[:script]
-        if desired_script.is_a?(String) #custom path to script
-          uia_strategy = :host
-        elsif desired_script == :run_loop_host
-          uia_strategy = :host
-        elsif desired_script == :run_loop_fast_uia
-          uia_strategy = :preferences
-        elsif desired_script == :run_loop_shared_element
-          uia_strategy = :shared_element
-        else
-          raise "Inconsistent state: desired script #{desired_script} has not uia_strategy"
-        end
-      end
-
-      # At this point script and uia_strategy selected
-      cloned_options = options.clone
-      cloned_options[:script] = script
-      cloned_options[:uia_strategy] = uia_strategy
-
-      # Xcode and SimControl will not be properly cloned and we don't want
-      # them to be; we want to use the exact objects that were passed.
-      if options[:xcode]
-        cloned_options[:xcode] = options[:xcode]
-      end
-
-      if options[:sim_control]
-        cloned_options[:sim_control] = options[:sim_control]
-      end
-
-      if options[:simctl]
-        cloned_options[:simctl] = options[:simctl]
-      end
-
       Core.run_with_options(cloned_options)
     end
   end
@@ -212,36 +202,104 @@ Please quit the Instruments.app and try again.)
     FileUtils.cp(pngs, dest) if pngs and pngs.length > 0
   end
 
-  def self.default_script_for_uia_strategy(uia_strategy)
-    case uia_strategy
-      when :preferences
-        Core.script_for_key(:run_loop_fast_uia)
-      when :host
-        Core.script_for_key(:run_loop_host)
-      when :shared_element
-        Core.script_for_key(:run_loop_shared_element)
-      else
-        Core.script_for_key(:run_loop_basic)
-    end
-  end
-
-  def self.validate_script(script)
-    if script.is_a?(String)
-      unless File.exist?(script)
-        raise "Unable to find file: #{script}"
-      end
-    elsif script.is_a?(Symbol)
-      script = Core.script_for_key(script)
-      unless script
-        raise "Unknown script for symbol: #{script}. Options: #{Core::SCRIPTS.keys.join(', ')}"
-      end
-    else
-      raise "Script must be a symbol or path: #{script}"
-    end
-    script
-  end
-
   def self.log_info(*args)
     RunLoop::Logging.log_info(*args)
+  end
+
+  # @!visibility private
+  #
+  # @param [RunLoop::Xcode] xcode The active Xcode
+  # @param [RunLoop::Device] device The device under test.
+  def self.default_automator(xcode, device)
+    # TODO XTC support
+    return :instruments if RunLoop::Environment.xtc?
+
+    if xcode.version_gte_8?
+      if device.version >= RunLoop::Version.new("9.0")
+        :device_agent
+      else
+        raise RuntimeError, %Q[
+Invalid Xcode and iOS combination:
+
+Xcode version: #{xcode.version.to_s}
+  iOS version: #{device.version.to_s}
+
+Calabash cannot test iOS < 9.0 using Xcode 8 because DeviceAgent is not
+compatible with iOS < 9.0 and UIAutomation is not available in Xcode 8.
+
+You can rerun your test if you have Xcode 7 installed:
+
+$ DEVELOPER_DIR=/path/to/Xcode/7.3.1/Xcode.app/Contents/Developer cucumber
+
+]
+      end
+
+    else
+      :instruments
+    end
+  end
+
+  # @!visibility private
+  #
+  # First pass at choosing the correct code path.
+  #
+  # We don't know if we can test on iOS 8 with UIAutomation or DeviceAgent on
+  # Xcode 8.
+  #
+  # @param [Hash] options The options passed by the user
+  # @param [RunLoop::Xcode] xcode The active Xcode
+  # @param [RunLoop::Device] device The device under test
+  def self.detect_automator(options, xcode, device)
+    # TODO XTC support
+    return :instruments if RunLoop::Environment.xtc?
+
+    automator = options[:automator]
+
+    if automator
+      if xcode.version_gte_8?
+        if automator == :instruments
+          raise RuntimeError, %Q[
+Incompatible :automator option for active Xcode.
+
+Detected :automator => :instruments and Xcode #{xcode.version}.
+
+Don't set the :automator option unless you are gem maintainer.
+
+]
+        elsif device.version < RunLoop::Version.new("9.0")
+          raise RuntimeError, %Q[
+
+Invalid Xcode and iOS combination:
+
+Xcode version: #{xcode.version.to_s}
+  iOS version: #{device.version.to_s}
+
+Calabash cannot test iOS < 9.0 using Xcode 8 because DeviceAgent is not
+compatible with iOS < 9.0 and UIAutomation is not available in Xcode 8.
+
+You can rerun your test if you have Xcode 7 installed:
+
+$ DEVELOPER_DIR=/path/to/Xcode/7.3.1/Xcode.app/Contents/Developer cucumber
+
+Don't set the :automator option unless you are gem maintainer.
+
+]
+        end
+      end
+
+      if ![:device_agent, :instruments].include?(automator)
+        raise RuntimeError, %Q[
+Invalid :automator option: #{automator}
+
+Allowed automators: :device_agent or :instruments.
+
+Don't set the :automator option unless you are gem maintainer.
+
+]
+      end
+      automator
+    else
+      RunLoop.default_automator(xcode, device)
+    end
   end
 end
